@@ -134,6 +134,7 @@
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
 #include "slic3r/Utils/BBLNetworkPlugin.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
+#include "slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 //#ifdef WIN32
 //#include "BaseException.h"
@@ -1217,6 +1218,14 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
     std::string os_type = "windows";
 #endif
 
+    // Bridge mode (Windows/macOS): the vendor doesn't publish a usable networking
+    // library for those platforms, so request the Linux payload instead — it's what
+    // the bridge actually runs (natively on Linux hosts, via WSL2/a Linux VM on
+    // Windows/macOS). install_plugin() then filters/validates the zip accordingly.
+    if (Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name)) {
+        os_type = Slic3r::PJarczakLinuxBridge::forced_download_os_type();
+    }
+
     // get_url
     std::string  url = get_plugin_url(name, app_config->get_country_code());
     std::string download_url;
@@ -1388,6 +1397,14 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
         return InstallStatusUnzipFailed;
     }
 
+    // Bridge mode (Windows/macOS): the vendor's plugin bundle for those platforms
+    // doesn't include a usable networking library, so the download was forced to the
+    // Linux payload instead (see download_plugin()). Only extract the files the bridge
+    // actually needs, land them flat in plugin_folder (no subdirectory), and validate
+    // them as real ELF payloads before trusting them.
+    const bool pj_force_linux_payload = Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name);
+    const std::string pj_manifest_name = Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name();
+
     boost::filesystem::path legacy_lib_path, legacy_lib_backup;
     bool had_existing_legacy = false;
     if (name == "plugins") {
@@ -1432,6 +1449,12 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
                     std::string extra(1024, 0);
                     size_t n = mz_zip_reader_get_extra(&archive, stat.m_file_index, extra.data(), extra.size());
                     dest_file = decode(extra.substr(0, n), stat.m_filename);
+                }
+                if (pj_force_linux_payload) {
+                    const std::string file_name = boost::filesystem::path(dest_file).filename().string();
+                    if (!(file_name == pj_manifest_name || Slic3r::PJarczakLinuxBridge::is_linux_payload_filename(file_name)))
+                        continue;
+                    dest_file = file_name;
                 }
                 auto dest_path = plugin_folder / dest_file;
                 boost::filesystem::create_directories(dest_path.parent_path());
@@ -1493,6 +1516,15 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
                             return InstallStatusUnzipFailed;
                         }
                     }
+                    if (pj_force_linux_payload && dest_path.filename().string() != pj_manifest_name) {
+                        std::string validate_reason;
+                        if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(dest_path.string(), &validate_reason)) {
+                            BOOST_LOG_TRIVIAL(error) << "[install_plugin] linux payload validation failed for " << dest_path.string() << ": " << validate_reason;
+                            close_zip_reader(&archive);
+                            if (pro_fn) { pro_fn(InstallStatusUnzipFailed, 0, cancel); }
+                            return InstallStatusUnzipFailed;
+                        }
+                    }
                 }
                 catch (const std::exception& e)
                 {
@@ -1512,6 +1544,17 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
     }
 
     close_zip_reader(&archive);
+
+    if (pj_force_linux_payload) {
+        std::string validate_reason;
+        const auto manifest_path = plugin_folder / pj_manifest_name;
+        if (boost::filesystem::exists(manifest_path) &&
+            !Slic3r::PJarczakLinuxBridge::validate_linux_payload_set_against_manifest(plugin_folder, &validate_reason)) {
+            BOOST_LOG_TRIVIAL(error) << "[install_plugin] manifest validation failed: " << validate_reason;
+            if (pro_fn) { pro_fn(InstallStatusUnzipFailed, 0, cancel); }
+            return InstallStatusUnzipFailed;
+        }
+    }
 
     if (name == "plugins") {
         std::string config_version = app_config->get_network_plugin_version();
@@ -3263,6 +3306,64 @@ void GUI_App::copy_network_if_available()
         } catch (nlohmann::detail::parse_error& err) {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": parse " << changelog_file << " failed: " << err.what();
         }
+    }
+
+    // Bridge mode (Windows/macOS): the OTA cache holds the Linux payload (see
+    // download_plugin()/install_plugin()), not the per-platform library names handled
+    // below, and it isn't versioned the same way - handle it as its own path.
+    if (Slic3r::PJarczakLinuxBridge::enabled() && Slic3r::PJarczakLinuxBridge::use_bridge_network_module()) {
+        if (!boost::filesystem::exists(plugin_folder))
+            boost::filesystem::create_directory(plugin_folder);
+
+        std::string error_message;
+        auto copy_one = [&](const boost::filesystem::path& src, const boost::filesystem::path& dst) -> bool {
+            CopyFileResult cfr = copy_file(src.string(), dst.string(), error_message, false);
+            if (cfr != CopyFileResult::SUCCESS) {
+                BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Copying failed(" << cfr << "): " << error_message;
+                return false;
+            }
+            static constexpr const auto perms = fs::owner_read | fs::owner_write | fs::group_read | fs::others_read;
+            fs::permissions(dst, perms);
+            return true;
+        };
+
+        for (const auto& file_name : {
+                Slic3r::PJarczakLinuxBridge::linux_network_library_name(),
+                Slic3r::PJarczakLinuxBridge::linux_source_library_name(),
+                std::string("liblive555.so"),
+                Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name() }) {
+            const auto src = cache_folder / file_name;
+            if (!boost::filesystem::exists(src))
+                continue;
+            if (file_name != Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name()) {
+                std::string validate_reason;
+                if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(src.string(), &validate_reason)) {
+                    BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": invalid linux payload " << src.string() << ": " << validate_reason;
+                    continue;
+                }
+            }
+            if (!copy_one(src, plugin_folder / file_name))
+                return;
+            fs::remove(src);
+        }
+
+        const auto manifest = plugin_folder / Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name();
+        if (boost::filesystem::exists(manifest)) {
+            std::string validate_reason;
+            if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_set_against_manifest(plugin_folder, &validate_reason)) {
+                BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": manifest validation failed after copy: " << validate_reason;
+                return;
+            }
+        }
+
+        if (!cached_version.empty()) {
+            app_config->set_network_plugin_version(cached_version);
+            app_config->save();
+        }
+        if (boost::filesystem::exists(changelog_file))
+            fs::remove(changelog_file);
+        app_config->set("update_network_plugin", "false");
+        return;
     }
 
     if (cached_version.empty()) {
