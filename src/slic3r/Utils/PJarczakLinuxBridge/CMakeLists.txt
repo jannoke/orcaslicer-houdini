@@ -13,6 +13,7 @@ set(PJARCZAK_LINUX_BRIDGE_INCLUDE_DIRS
     ${PJARCZAK_REPO_ROOT}
     ${PJARCZAK_REPO_ROOT}/src
     ${PJARCZAK_REPO_ROOT}/deps_src
+    ${CMAKE_BINARY_DIR}/src/libslic3r
 )
 
 if (WIN32)
@@ -39,6 +40,11 @@ else()
     target_include_directories(pjarczak_bambu_networking_bridge PRIVATE ${PJARCZAK_LINUX_BRIDGE_INCLUDE_DIRS})
     target_link_libraries(pjarczak_bambu_networking_bridge PRIVATE boost_headeronly boost_libs OpenSSL::Crypto)
 endif()
+
+# The common sources transitively pull in libslic3r/AppConfig.hpp (via bambu_networking.hpp),
+# which needs Eigen headers; link the header-only Eigen3 interface target instead of duplicating
+# its include dirs by hand.
+target_link_libraries(pjarczak_bambu_networking_bridge PRIVATE Eigen3::Eigen)
 
 set_target_properties(pjarczak_bambu_networking_bridge PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
@@ -73,7 +79,7 @@ if (UNIX AND NOT APPLE AND EXISTS "${PJARCZAK_LINUX_HOST_DIR}/main.cpp" AND EXIS
         if (TARGET nlohmann_json::nlohmann_json)
             target_link_libraries(${target_name} PRIVATE nlohmann_json::nlohmann_json)
         endif()
-        target_link_libraries(${target_name} PRIVATE boost_headeronly ${CMAKE_DL_LIBS} OpenSSL::Crypto)
+        target_link_libraries(${target_name} PRIVATE boost_headeronly ${CMAKE_DL_LIBS} OpenSSL::Crypto Eigen3::Eigen)
         target_link_options(${target_name} PRIVATE -static-libstdc++ -static-libgcc)
         set_target_properties(${target_name} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
