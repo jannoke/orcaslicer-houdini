@@ -29,9 +29,12 @@ jobs:
     uses: ./.github/workflows/build_linux_appimage.yml
     secrets: inherit
 
-  build_macos:
-    uses: ./.github/workflows/build_macos_bridge.yml
-    secrets: inherit
+  # macOS disabled for now (expensive, only Windows/Linux x86_64 can be
+  # tested) - uncomment build_macos and re-add it to publish_release's
+  # needs below to restore.
+  # build_macos:
+  #   uses: ./.github/workflows/build_macos_bridge.yml
+  #   secrets: inherit
 
   publish_release:
     name: Publish release assets
@@ -39,7 +42,6 @@ jobs:
       - build_windows
       - build_linux_portable
       - build_linux_appimage
-      - build_macos
     if: ${{ github.event_name == 'push' || github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
