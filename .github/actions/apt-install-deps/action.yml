@@ -3,6 +3,12 @@ description: 'Install the packages needed for building and deploying'
 runs:
   using: 'composite'
   steps:
+    - name: Fix libunwind-dev conflict on GitHub-hosted runners
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get remove -y 'libunwind-*-dev' || true
+        sudo apt-get install -y libunwind-dev
     - name: Install dependencies from build_linux.sh
       shell: bash
       run: |
