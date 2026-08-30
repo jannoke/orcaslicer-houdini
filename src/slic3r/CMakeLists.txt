@@ -817,7 +817,12 @@ if (UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
     find_package(GTK${SLIC3R_GTK} REQUIRED)
     pkg_check_modules(LIBSECRET REQUIRED libsecret-1)
-    pkg_check_modules(webkit2gtk REQUIRED webkit2gtk-4.1)
+    # Older distros (e.g. Ubuntu 22.04) only ship webkit2gtk-4.0; newer ones
+    # ship 4.1 instead. Matches the fallback in scripts/linux.d/debian.
+    pkg_check_modules(webkit2gtk webkit2gtk-4.1)
+    if (NOT webkit2gtk_FOUND)
+        pkg_check_modules(webkit2gtk REQUIRED webkit2gtk-4.0)
+    endif ()
     if (FLATPAK)
         # I don't know why this is needed, but for whatever reason slic3r isn't
         # linking to X11 and webkit2gtk. force it.
