@@ -135,6 +135,11 @@ jobs:
     runs-on: ${{ vars.SELF_HOSTED && 'orca-lnx-server' || 'ubuntu-24.04' }}
     needs: build_linux
     if: ${{ !cancelled() && success() }}
+    # Required by EnricoMi/publish-unit-test-result-action to POST check runs;
+    # without it the repo's default (read-only) GITHUB_TOKEN gets a 403 and
+    # fails this job even though the tests themselves passed.
+    permissions:
+      checks: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
