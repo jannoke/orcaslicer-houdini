@@ -452,11 +452,12 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # Build + tar the unit tests (-t) only on the leg that runs them: the
-          # aarch64 leg by default (faster GitHub arm runner), or amd64 when using
-          # self-hosted runners (no arm self-hosted server). unit_tests downloads
-          # this tarball. The profile validator is built with -s, so amd64 keeps it.
-          tests=${{ (!vars.SELF_HOSTED && inputs.arch == 'aarch64') || (vars.SELF_HOSTED && inputs.arch != 'aarch64') }}
+          # Build + tar the unit tests (-t) only on the leg that runs them.
+          # The aarch64 leg is currently disabled (Windows/Linux x86_64 only),
+          # so tests build on the amd64 leg for both hosted and self-hosted
+          # runners. unit_tests downloads this tarball. The profile validator
+          # is built with -s, so amd64 keeps it.
+          tests=${{ inputs.arch != 'aarch64' }}
           if $tests; then flags=-istrlL; else flags=-isrlL; fi
           ./build_linux.sh "$flags"
           ./scripts/check_appimage_libs.sh ./build/package ./build/package/bin/orca-slicer
@@ -468,7 +469,7 @@ jobs:
         # Use tar because upload-artifacts won't always preserve directory structure
         # and doesn't preserve file permissions
       - name: Upload Test Artifact
-        if: runner.os == 'Linux' && ((!vars.SELF_HOSTED && inputs.arch == 'aarch64') || (vars.SELF_HOSTED && inputs.arch != 'aarch64'))
+        if: runner.os == 'Linux' && inputs.arch != 'aarch64'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ github.sha }}-tests
