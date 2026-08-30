@@ -116,6 +116,7 @@ namespace Slic3r {
 #define IOT_JSON_KEY_USER_ID            "user_id"
 
 // printer callbacks
+typedef std::function<void(int online_login, bool login)> OnUserLoginFn;
 typedef std::function<void(std::string topic_str)>  OnPrinterConnectedFn;
 typedef std::function<void(int status, std::string dev_id, std::string msg)> OnLocalConnectedFn;
 typedef std::function<void(int return_code, int reason_code)>                OnServerConnectedFn;
@@ -275,6 +276,7 @@ struct PrintParams {
     int             auto_bed_leveling{ 0 };
     int             auto_flow_cali{ 0 };
     int             auto_offset_cali{ 0 };
+    int             extruder_cali_manual_mode{ -1 };
     bool            task_ext_change_assist;
     bool            try_emmc_print;
 };
@@ -386,5 +388,12 @@ enum class MessageFlag : int
 };
 
 }
+
+// The PJarczakLinuxBridge sources were written against the FULU fork's own
+// bambu_networking.hpp, which historically declared these callback types
+// under a "BBL" namespace; upstream declares them directly under Slic3r.
+// Alias so the bridge sources compile unchanged instead of touching every
+// BBL:: qualifier across those files.
+namespace BBL = Slic3r;
 
 #endif
