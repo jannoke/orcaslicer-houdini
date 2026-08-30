@@ -373,6 +373,9 @@ modules:
         path: ../../src
         dest: src
       - type: dir
+        path: ../../shared
+        dest: shared
+      - type: dir
         path: ../../localization
         dest: localization
 
