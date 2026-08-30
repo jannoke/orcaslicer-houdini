@@ -46,6 +46,11 @@ endif()
 # its include dirs by hand.
 target_link_libraries(pjarczak_bambu_networking_bridge PRIVATE Eigen3::Eigen)
 
+# libslic3r/Point.hpp (pulled in via AppConfig.hpp) includes <oneapi/tbb/scalable_allocator.h>,
+# which triggers MSVC's implicit #pragma comment(lib, "tbb12.lib") autolinking. Without this,
+# the linker has no search path for that lib and fails with LNK1104 on Windows.
+target_link_libraries(pjarczak_bambu_networking_bridge PRIVATE TBB::tbb)
+
 set_target_properties(pjarczak_bambu_networking_bridge PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
