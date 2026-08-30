@@ -164,6 +164,16 @@ jobs:
         run: .\build_release_vs.bat slicer
 
 
+      - name: Assemble Windows runtime bundle
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_runtime\release\assemble_windows_runtime_bundle.ps1" `
+            -OutputDir "$env:GITHUB_WORKSPACE\build\OrcaSlicer" `
+            -RootFs "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_runtime\rootfs\windows-wsl2-rootfs.tar" `
+            -LinuxHostBinary "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64\pjarczak_bambu_linux_host" `
+            -RuntimeDir "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64" `
+            -BridgeDll "$env:GITHUB_WORKSPACE\build\OrcaSlicer\pjarczak_bambu_networking_bridge.dll"
+
       - name: Ensure WSL is available for runtime validation
         shell: pwsh
         run: |
