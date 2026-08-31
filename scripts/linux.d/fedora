@@ -3,6 +3,7 @@
 REQUIRED_DEV_PACKAGES=(
     autoconf
     automake
+    clang
     cmake
     dbus-devel
     eglexternalplatform-devel
@@ -20,7 +21,9 @@ REQUIRED_DEV_PACKAGES=(
     libquadmath-devel
     libsecret-devel
     libspnav-devel
+    libstdc++-static
     libtool
+    lld
     m4
     mesa-libGLU-devel
     ninja-build
