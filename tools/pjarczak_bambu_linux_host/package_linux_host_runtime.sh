@@ -135,12 +135,25 @@ cp -f "$HOST_ABI0" "$RUNTIME_ROOT/pjarczak_bambu_linux_host_abi0"
 chmod +x "$RUNTIME_ROOT/pjarczak_bambu_linux_host" "$RUNTIME_ROOT/pjarczak_bambu_linux_host_abi1" "$RUNTIME_ROOT/pjarczak_bambu_linux_host_abi0"
 
 for extra in \
-    "$PROJECT_DIR/cert/ca-certificates.crt" \
     "$PROJECT_DIR/cert/slicer_base64.cer" \
-    "$PROJECT_DIR/resources/cert/ca-certificates.crt" \
     "$PROJECT_DIR/resources/cert/slicer_base64.cer"; do
     if [[ -f "$extra" ]]; then
         cp -f "$extra" "$RUNTIME_ROOT/$(basename -- "$extra")"
+    fi
+done
+
+# ca-certificates.crt isn't checked into the repo; take a project override if one
+# exists, otherwise fall back to the system CA bundle (present on the GH-hosted
+# ubuntu-24.04 runner and most dev machines) so install_runtime.ps1's required-file
+# check has something to find.
+for extra in \
+    "$PROJECT_DIR/cert/ca-certificates.crt" \
+    "$PROJECT_DIR/resources/cert/ca-certificates.crt" \
+    "/etc/ssl/certs/ca-certificates.crt" \
+    "/etc/pki/tls/certs/ca-bundle.crt"; do
+    if [[ -f "$extra" ]]; then
+        cp -f "$extra" "$RUNTIME_ROOT/ca-certificates.crt"
+        break
     fi
 done
 
