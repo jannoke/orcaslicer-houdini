@@ -171,8 +171,7 @@ jobs:
             -OutputDir "$env:GITHUB_WORKSPACE\build\OrcaSlicer" `
             -RootFs "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_runtime\rootfs\windows-wsl2-rootfs.tar" `
             -LinuxHostBinary "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64\pjarczak_bambu_linux_host" `
-            -RuntimeDir "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64" `
-            -BridgeDll "$env:GITHUB_WORKSPACE\build\OrcaSlicer\pjarczak_bambu_networking_bridge.dll"
+            -RuntimeDir "$env:GITHUB_WORKSPACE\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64"
 
       - name: Ensure WSL is available for runtime validation
         shell: pwsh

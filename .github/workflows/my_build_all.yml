@@ -29,6 +29,10 @@ jobs:
     uses: ./.github/workflows/build_linux_appimage.yml
     secrets: inherit
 
+  build_rpm_fedora:
+    uses: ./.github/workflows/build_rpm_fedora.yml
+    secrets: inherit
+
   # macOS disabled for now (expensive, only Windows/Linux x86_64 can be
   # tested) - uncomment build_macos and re-add it to publish_release's
   # needs below to restore.
@@ -42,6 +46,7 @@ jobs:
       - build_windows
       - build_linux_portable
       - build_linux_appimage
+      - build_rpm_fedora
     if: ${{ github.event_name == 'push' || github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
