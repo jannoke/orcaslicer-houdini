@@ -6121,7 +6121,11 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    version_display = SoftFever_VERSION;
+    // "-PLB" (PJarczakLinuxBridge) marks this as our fork build in the
+    // startup splash and About dialog, distinct from an official release.
+    // SoftFever_VERSION itself is left untouched since it also feeds
+    // semver parsing, the updater version check, and the user agent string.
+    version_display = std::string(SoftFever_VERSION) + "-PLB";
     return version_display;
 }
 
