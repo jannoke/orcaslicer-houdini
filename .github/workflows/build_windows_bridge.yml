@@ -7,7 +7,7 @@ on:
 jobs:
   prepare_linux_bridge_runtime:
     name: Prepare Linux bridge runtime
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
 
     steps:
       - name: Checkout
