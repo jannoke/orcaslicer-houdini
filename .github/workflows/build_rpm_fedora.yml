@@ -11,7 +11,7 @@ concurrency:
 jobs:
   rpm_fedora:
     name: RPM (fedora-${{ matrix.fedora_version }})
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux]
     strategy:
       fail-fast: false
       matrix:
