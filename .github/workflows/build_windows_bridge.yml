@@ -76,7 +76,7 @@ jobs:
 
   build_windows:
     name: Build Windows
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows]
     needs: prepare_linux_bridge_runtime
     env:
       ORCA_UPDATER_SIG_KEY: ${{ secrets.ORCA_UPDATER_SIG_KEY }}
@@ -147,7 +147,16 @@ jobs:
         run: |
           choco install nsis -y
 
+      # Same key scheme as build_check_cache.yml; deps only rebuild when deps/ changes.
+      - name: Cache Windows deps
+        id: cache_deps
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
+          key: windows-x64-cache-orcaslicer_deps-build-${{ hashFiles('deps/**') }}
+
       - name: Build Windows deps
+        if: steps.cache_deps.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
         env:
           WindowsSdkDir: 'C:\Program Files (x86)\Windows Kits\10\'
