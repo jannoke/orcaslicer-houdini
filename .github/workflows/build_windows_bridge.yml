@@ -154,12 +154,20 @@ jobs:
           choco install nsis -y
 
       # Same key scheme as build_check_cache.yml; deps only rebuild when deps/ changes.
+      # The key is computed once here, on the clean checkout: the cache post step
+      # re-evaluates its inputs, and hashFiles('deps/**') over the built deps/build
+      # tree times out after 120s.
+      - name: Compute deps cache key
+        id: deps_key
+        shell: pwsh
+        run: echo "key=windows-x64-cache-orcaslicer_deps-build-${{ hashFiles('deps/**') }}" >> $env:GITHUB_OUTPUT
+
       - name: Cache Windows deps
         id: cache_deps
         uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
-          key: windows-x64-cache-orcaslicer_deps-build-${{ hashFiles('deps/**') }}
+          key: ${{ steps.deps_key.outputs.key }}
 
       - name: Build Windows deps
         if: steps.cache_deps.outputs.cache-hit != 'true'
