@@ -76,7 +76,7 @@ jobs:
 
   build_windows:
     name: Build Windows
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows]
     needs: prepare_linux_bridge_runtime
     env:
       ORCA_UPDATER_SIG_KEY: ${{ secrets.ORCA_UPDATER_SIG_KEY }}
