@@ -155,6 +155,12 @@ const char* forced_client_version()
     return "02.05.02.51";
 }
 
+bool override_client_os_header()
+{
+    bool keep = false;
+    return !(env_flag("PJARCZAK_BRIDGE_KEEP_OS_HEADERS", keep) && keep);
+}
+
 std::string bridge_network_module_stem()
 {
     return "pjarczak_bambu_networking_bridge";

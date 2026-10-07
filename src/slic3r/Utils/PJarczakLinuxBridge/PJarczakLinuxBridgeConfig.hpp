@@ -13,6 +13,8 @@ bool source_module_is_network_module();
 bool should_force_linux_plugin_payload(const std::string& plugin_name);
 const char* forced_download_os_type();
 const char* forced_client_version();
+// Whether to report the Linux plugin's OS in X-BBL-OS-Type instead of the host OS
+bool override_client_os_header();
 
 std::string bridge_network_module_stem();
 std::string bridge_network_current_dir_name();
