@@ -17,19 +17,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Tag pushes publish a release, so fail before hours of builds if the
+  # tag has no hand-written, user-facing notes in .github/release-notes/.
+  check_release_notes:
+    name: Check release notes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/release-notes
+      - name: Require notes file for the tag
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          notes=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [[ ! -s "$notes" ]]; then
+            echo "ERROR: $notes is missing or empty - commit user-facing release notes before tagging"
+            exit 1
+          fi
+
   build_windows:
+    needs: check_release_notes
     uses: ./.github/workflows/build_windows_bridge.yml
     secrets: inherit
 
   build_linux_portable:
+    needs: check_release_notes
     uses: ./.github/workflows/build_linux_portable.yml
     secrets: inherit
 
   build_linux_appimage:
+    needs: check_release_notes
     uses: ./.github/workflows/build_linux_appimage.yml
     secrets: inherit
 
   build_rpm_fedora:
+    needs: check_release_notes
     uses: ./.github/workflows/build_rpm_fedora.yml
     secrets: inherit
 
@@ -53,19 +78,31 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/release-notes
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
           path: release-artifacts
 
+      # Bridge runtime artifacts are build inputs already bundled into the
+      # Windows packages, and per-job checksum files are replaced by a single
+      # SHA256SUMS.txt covering exactly the published files.
       - name: Flatten release files
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-files
-          find release-artifacts -type f -print0 | while IFS= read -r -d '' file; do
+          find release-artifacts -type f \
+            ! -path 'release-artifacts/linux_host_runtime_*' \
+            ! -path 'release-artifacts/wsl_rootfs_*' \
+            ! -name 'SHA256SUMS*' -print0 | while IFS= read -r -d '' file; do
             cp "$file" release-files/"$(basename "$file")"
           done
+          (cd release-files && sha256sum * > SHA256SUMS.txt)
           ls -lah release-files
 
       - name: Resolve tag
@@ -81,11 +118,15 @@ jobs:
           fi
           echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
 
+      # On a tag push, create the release as a prerelease with the notes file
+      # checked by check_release_notes. On a manually published release, keep
+      # its existing notes and flags and only attach the files.
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          generate_release_notes: true
+          body_path: ${{ github.event_name == 'push' && format('.github/release-notes/{0}.md', env.RELEASE_TAG) || '' }}
+          prerelease: ${{ github.event_name == 'push' && 'true' || '' }}
           overwrite_files: true
           files: |
             release-files/*
