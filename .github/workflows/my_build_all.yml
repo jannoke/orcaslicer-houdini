@@ -5,15 +5,15 @@ on:
   push:
     tags:
       - 'v*'
-  release:
-    types:
-      - published
+  # No `release: published` trigger: publishing a release by hand (or with
+  # gh using a personal token) would rebuild everything with the tag's
+  # workflow files and re-attach assets to the existing release.
 
 permissions:
   contents: write
 
 concurrency:
-  group: my-build-all-${{ github.event.release.tag_name || github.ref }}
+  group: my-build-all-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -72,7 +72,7 @@ jobs:
       - build_linux_portable
       - build_linux_appimage
       - build_rpm_fedora
-    if: ${{ github.event_name == 'push' || github.event_name == 'release' }}
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -105,28 +105,14 @@ jobs:
           (cd release-files && sha256sum * > SHA256SUMS.txt)
           ls -lah release-files
 
-      - name: Resolve tag
-        shell: bash
-        env:
-          EVENT_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          set -euo pipefail
-          tag="${EVENT_TAG:-${GITHUB_REF_NAME:-}}"
-          if [[ -z "$tag" ]]; then
-            echo "ERROR: tag could not be resolved"
-            exit 1
-          fi
-          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
-
-      # On a tag push, create the release as a prerelease with the notes file
-      # checked by check_release_notes. On a manually published release, keep
-      # its existing notes and flags and only attach the files.
+      # Create the release as a prerelease with the notes file checked by
+      # check_release_notes.
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          body_path: ${{ github.event_name == 'push' && format('.github/release-notes/{0}.md', env.RELEASE_TAG) || '' }}
-          prerelease: ${{ github.event_name == 'push' && 'true' || '' }}
+          tag_name: ${{ github.ref_name }}
+          body_path: .github/release-notes/${{ github.ref_name }}.md
+          prerelease: true
           overwrite_files: true
           files: |
             release-files/*
