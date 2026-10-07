@@ -21,6 +21,8 @@ std::string bridge_network_library_path(const boost::filesystem::path& plugin_fo
 
 std::string linux_network_library_name();
 std::string linux_source_library_name();
+// Optional camera/liveview libraries shipped in the vendor Linux plugin zip
+const std::vector<std::string>& linux_media_library_names();
 std::string host_executable_file_name();
 std::string mac_host_wrapper_file_name();
 std::string mac_lima_instance_file_name();
