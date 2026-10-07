@@ -123,22 +123,6 @@ jobs:
           echo "APP_BIN=$app_bin" >> "$GITHUB_ENV"
           tar -C install-dir -czf "out/OrcaSlicer-BMCU_LinuxDir_${DIST_ID}_amd64_${VER}.tar.gz" .
 
-      - name: Linux - build AppImage (best-effort)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -x "build/src/build_linux_image.sh" ]; then
-            (cd build && ./src/build_linux_image.sh -i -R Release) || true
-          fi
-
-          appimage="$(find build -maxdepth 3 -type f -name '*.AppImage' | head -n 1 || true)"
-          if [ -n "$appimage" ]; then
-            mv "$appimage" "out/OrcaSlicer-BMCU_${DIST_ID}_amd64_${VER}.AppImage"
-            chmod +x "out/OrcaSlicer-BMCU_${DIST_ID}_amd64_${VER}.AppImage"
-          else
-            echo "WARN: no AppImage produced"
-          fi
-
       - name: Linux - build .deb from install-dir
         shell: bash
         run: |
@@ -335,22 +319,6 @@ jobs:
 
           echo "APP_BIN=$app_bin" >> "$GITHUB_ENV"
           tar -C install-dir -czf "out/OrcaSlicer-BMCU_LinuxDir_${DIST_ID}_amd64_${VER}.tar.gz" .
-
-      - name: Linux - build AppImage (best-effort)
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -x "build/src/build_linux_image.sh" ]; then
-            (cd build && ./src/build_linux_image.sh -i -R Release) || true
-          fi
-
-          appimage="$(find build -maxdepth 3 -type f -name '*.AppImage' | head -n 1 || true)"
-          if [ -n "$appimage" ]; then
-            mv "$appimage" "out/OrcaSlicer-BMCU_${DIST_ID}_amd64_${VER}.AppImage"
-            chmod +x "out/OrcaSlicer-BMCU_${DIST_ID}_amd64_${VER}.AppImage"
-          else
-            echo "WARN: no AppImage produced"
-          fi
 
       - name: Linux - build .deb from install-dir
         shell: bash
