@@ -90,7 +90,12 @@ jobs:
             -DORCA_TOOLS=ON \
             -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
 
-          cmake --build build --config Release --target install -j"$(nproc)"
+          # PCH'd TUs need ~3 GB each (CGAL up to ~4.4 GB); size -j by RAM, not CPUs
+          mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+          jobs=$(( mem_gb / 4 )); (( jobs < 1 )) && jobs=1
+          (( jobs > $(nproc) )) && jobs=$(nproc)
+          echo "Building with -j${jobs} (MemAvailable ${mem_gb} GB, nproc $(nproc))"
+          cmake --build build --config Release --target install -j"${jobs}"
 
           ./scripts/run_gettext.sh
           mkdir -p install-dir/resources/i18n
