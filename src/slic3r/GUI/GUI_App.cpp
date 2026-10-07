@@ -3327,11 +3327,13 @@ void GUI_App::copy_network_if_available()
             return true;
         };
 
-        for (const auto& file_name : {
-                Slic3r::PJarczakLinuxBridge::linux_network_library_name(),
-                Slic3r::PJarczakLinuxBridge::linux_source_library_name(),
-                std::string("liblive555.so"),
-                Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name() }) {
+        std::vector<std::string> file_names{
+            Slic3r::PJarczakLinuxBridge::linux_network_library_name(),
+            Slic3r::PJarczakLinuxBridge::linux_source_library_name() };
+        const auto& media_names = Slic3r::PJarczakLinuxBridge::linux_media_library_names();
+        file_names.insert(file_names.end(), media_names.begin(), media_names.end());
+        file_names.push_back(Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name());
+        for (const auto& file_name : file_names) {
             const auto src = cache_folder / file_name;
             if (!boost::filesystem::exists(src))
                 continue;

@@ -1,5 +1,6 @@
 #include "PJarczakLinuxBridgeConfig.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -196,6 +197,12 @@ std::string linux_source_library_name()
     return "libBambuSource.so";
 }
 
+const std::vector<std::string>& linux_media_library_names()
+{
+    static const std::vector<std::string> names{"liblive555.so", "libagora_rtc_sdk.so", "libagora-fdkaac.so"};
+    return names;
+}
+
 std::string host_executable_file_name()
 {
     return "pjarczak_bambu_linux_host";
@@ -253,7 +260,10 @@ std::string windows_plugin_cache_subdir_file_name()
 
 bool is_linux_payload_filename(const std::string& file_name)
 {
-    return file_name == linux_network_library_name() || file_name == linux_source_library_name();
+    if (file_name == linux_network_library_name() || file_name == linux_source_library_name())
+        return true;
+    const auto& media = linux_media_library_names();
+    return std::find(media.begin(), media.end(), file_name) != media.end();
 }
 
 bool is_overlay_runtime_filename(const std::string& file_name)
