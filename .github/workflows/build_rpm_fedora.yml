@@ -69,10 +69,21 @@ jobs:
           set -euo pipefail
           ./build_linux.sh -u
 
+      # Size parallelism by RAM, not CPUs: PCH'd Orca TUs need ~3 GB each
+      # (CGAL up to ~4.4 GB); deps compile lighter, so allow ~3 GB per job.
+      - name: Fedora - size build parallelism
+        run: |
+          set -euo pipefail
+          mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+          size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > $(nproc) )) && j=$(nproc); echo "$j"; }
+          echo "DEPS_JOBS=$(size_jobs 3)" >> "$GITHUB_ENV"
+          echo "BUILD_JOBS=$(size_jobs 4)" >> "$GITHUB_ENV"
+          echo "MemAvailable ${mem_gb} GB, nproc $(nproc): deps -j$(size_jobs 3), build -j$(size_jobs 4)"
+
       - name: Fedora - build Orca dependencies
         run: |
           set -euo pipefail
-          ./build_linux.sh -drlL
+          ./build_linux.sh -drlL -j "${DEPS_JOBS}"
 
       - name: Fedora - build + install
         run: |
@@ -90,12 +101,7 @@ jobs:
             -DORCA_TOOLS=ON \
             -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
 
-          # PCH'd TUs need ~3 GB each (CGAL up to ~4.4 GB); size -j by RAM, not CPUs
-          mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
-          jobs=$(( mem_gb / 4 )); (( jobs < 1 )) && jobs=1
-          (( jobs > $(nproc) )) && jobs=$(nproc)
-          echo "Building with -j${jobs} (MemAvailable ${mem_gb} GB, nproc $(nproc))"
-          cmake --build build --config Release --target install -j"${jobs}"
+          cmake --build build --config Release --target install -j"${BUILD_JOBS}"
 
           ./scripts/run_gettext.sh
           mkdir -p install-dir/resources/i18n

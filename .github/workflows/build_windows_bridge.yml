@@ -178,13 +178,25 @@ jobs:
         shell: pwsh
         run: .\build_release_vs.bat deps
 
+      # PCH'd TUs need ~3 GB each, and msbuild -m x /MP starts one cl.exe per
+      # CPU per project, so cap /MP by free RAM (cl appends _CL_ after the
+      # project's /MP; last wins). build_release_vs.bat exits with the install
+      # step's status and ignores compile errors, so check the DLL exists.
       - name: Build slicer Win
         working-directory: ${{ github.workspace }}
         env:
           WindowsSdkDir: 'C:\Program Files (x86)\Windows Kits\10\'
           WindowsSDKVersion: '10.0.26100.0\'
         shell: pwsh
-        run: .\build_release_vs.bat slicer
+        run: |
+          $freeGb = [math]::Floor((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB)
+          $jobs = [math]::Max(1, [math]::Min([Environment]::ProcessorCount, [math]::Floor($freeGb / 4)))
+          Write-Host "Compiling with /MP$jobs (free RAM $freeGb GB, $([Environment]::ProcessorCount) CPUs)"
+          $env:_CL_ = "/MP$jobs"
+          .\build_release_vs.bat slicer
+          if (!(Test-Path build\src\Release\OrcaSlicer.dll)) {
+            throw 'build\src\Release\OrcaSlicer.dll is missing - the slicer build failed (search the log for "error C")'
+          }
 
 
       - name: Assemble Windows runtime bundle
