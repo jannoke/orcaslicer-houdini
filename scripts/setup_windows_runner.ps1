@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Installs everything the "Build Windows" job expects that GitHub's windows-latest
-    image ships by default: Chocolatey, Git, 7-Zip, PowerShell 7, Strawberry Perl,
+    image ships by default: Chocolatey, Git, 7-Zip, PowerShell 7, Strawberry Perl, zstd,
     NSIS, VS 2022 Build Tools (C++ + Windows SDK 10.0.26100) and WSL2. Also enables
     long paths, excludes the runner work dir from Defender and, if -RunnerUser is
     given, moves the runner service to that account (WSL does not work under
@@ -71,8 +71,9 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
 Update-Path
 
 # --- Tools ---------------------------------------------------------------------
-Step 'Git, 7-Zip, PowerShell 7, Strawberry Perl, NSIS'
-choco install -y --no-progress git 7zip powershell-core strawberryperl nsis
+Step 'Git, 7-Zip, PowerShell 7, Strawberry Perl, NSIS, zstd'
+# zstandard: actions/cache compresses with zstd and has no working fallback with Git's tar
+choco install -y --no-progress git 7zip powershell-core strawberryperl nsis zstandard
 Assert-ExitCode 'choco install tools'
 Update-Path
 
@@ -179,6 +180,7 @@ $checks = [ordered]@{
     'pwsh'                    = { [bool](Get-Command pwsh -ErrorAction SilentlyContinue) }
     'perl'                    = { [bool](Get-Command perl -ErrorAction SilentlyContinue) }
     'makensis'                = { [bool](Get-Command makensis -ErrorAction SilentlyContinue) }
+    'zstd'                    = { [bool](Get-Command zstd -ErrorAction SilentlyContinue) }
     '7-Zip at Program Files'  = { Test-Path "$env:ProgramFiles\7-Zip\7z.exe" }
     'MSVC C++ tools'          = { [bool](& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) }
     "Windows SDK $WinSdkVersion" = { Test-Path $sdkDir }
