@@ -149,6 +149,10 @@ elseif (MSVC)
 else ()
     # Boost on Raspberry-Pi does not link to pthreads explicitly.
     target_link_libraries(OrcaSlicer ${CMAKE_DL_LIBS} -lstdc++ Threads::Threads pangoft2-1.0)
+    # System libs (webkit2gtk) reference jpeg_*, so ld exports our static jpeg8 libjpeg-turbo and
+    # GStreamer's jpegdec binds to it. On distros with libjpeg.so.62 (Fedora) that ABI mismatch
+    # crashes the MJPEG camera liveview. Keep the bundled libjpeg private to the executable.
+    target_link_options(OrcaSlicer PRIVATE "-Wl,--exclude-libs,libjpeg.a")
 endif ()
 
 # Add the Slic3r GUI library, libcurl, OpenGL and GLU libraries.
