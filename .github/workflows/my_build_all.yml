@@ -105,14 +105,13 @@ jobs:
           (cd release-files && sha256sum * > SHA256SUMS.txt)
           ls -lah release-files
 
-      # Create the release as a prerelease with the notes file checked by
-      # check_release_notes.
+      # Create the release with the notes file checked by check_release_notes.
       - name: Create or update GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           body_path: .github/release-notes/${{ github.ref_name }}.md
-          prerelease: true
+          prerelease: false
           overwrite_files: true
           files: |
             release-files/*
