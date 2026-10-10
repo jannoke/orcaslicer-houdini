@@ -1185,7 +1185,7 @@ static std::string decode(std::string const& extra, std::string const& path = {}
     return Slic3r::decode_path(path.c_str());
 }
 
-int GUI_App::download_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn, WasCancelledFn cancel_fn)
+int GUI_App::download_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn, WasCancelledFn cancel_fn, const std::string& os_type_override)
 {
     int result = 0;
     json j;
@@ -1225,6 +1225,8 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
     if (Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name)) {
         os_type = Slic3r::PJarczakLinuxBridge::forced_download_os_type();
     }
+    if (!os_type_override.empty())
+        os_type = os_type_override;
 
     // get_url
     std::string  url = get_plugin_url(name, app_config->get_country_code());
@@ -1357,8 +1359,81 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
     http.perform_sync();
     j["result"] = result < 0 ? "failed" : "success";
     j["error_msg"] = err_msg;
+
+#if defined(__WINDOWS__)
+    // Bridge mode on Windows: the network plugin runs as the Linux payload, but the camera is played by
+    // the Windows DirectShow filter BambuSource.dll. Fetch the Windows plugin of the same version next
+    // to it so install_plugin() can take the player from there. The camera is optional for the bridge,
+    // so a failure here must not fail the plugin install.
+    if (result >= 0 && os_type_override.empty() && Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name)) {
+        if (download_plugin(name, package_name + ".win", nullptr, cancel_fn, "windows") < 0)
+            BOOST_LOG_TRIVIAL(warning) << "[download_plugin] could not download the Windows camera player, video playback may be unavailable";
+    }
+#endif
     return result;
 }
+
+#if defined(__WINDOWS__)
+// Bridge mode on Windows: take BambuSource.dll and live555.dll (the camera player) out of the Windows
+// plugin zip fetched by download_plugin(), so the player always matches the installed plugin version.
+// Only logs on failure: the camera is optional for the bridge.
+static void install_windows_camera_player(const boost::filesystem::path& plugin_folder, const boost::filesystem::path& zip_path)
+{
+    boost::system::error_code ec;
+    if (!boost::filesystem::exists(zip_path, ec))
+        return;
+
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    if (!open_zip_reader(&archive, zip_path.string())) {
+        BOOST_LOG_TRIVIAL(warning) << "[install_plugin] cannot open the Windows camera player package " << zip_path.string();
+        return;
+    }
+
+    for (mz_uint i = 0; i < mz_zip_reader_get_num_files(&archive); ++i) {
+        mz_zip_archive_file_stat stat;
+        if (!mz_zip_reader_file_stat(&archive, i, &stat) || stat.m_uncomp_size == 0)
+            continue;
+        const std::string file_name = boost::filesystem::path(stat.m_filename).filename().string();
+        if (!boost::iequals(file_name, "BambuSource.dll") && !boost::iequals(file_name, "live555.dll"))
+            continue;
+
+        size_t size = 0;
+        void*  data = mz_zip_reader_extract_to_heap(&archive, i, &size, 0);
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        if (!data || size < 2 || bytes[0] != 'M' || bytes[1] != 'Z') {
+            BOOST_LOG_TRIVIAL(warning) << "[install_plugin] " << file_name << " is not a Windows executable, skipped";
+            if (data) mz_free(data);
+            continue;
+        }
+
+        const auto dest = plugin_folder / file_name;
+        auto       tmp  = dest;
+        tmp += ".new";
+        {
+            fs::fstream out(tmp, std::ios::out | std::ios::binary | std::ios::trunc);
+            out.write(static_cast<const char*>(data), std::streamsize(size));
+        }
+        mz_free(data);
+
+        // A player DLL that is currently loaded cannot be overwritten, but it can be renamed aside.
+        fs::remove(dest, ec);
+        if (ec) {
+            auto aside = dest;
+            aside += ".old";
+            fs::remove(aside, ec);
+            fs::rename(dest, aside, ec);
+        }
+        fs::rename(tmp, dest, ec);
+        if (ec)
+            BOOST_LOG_TRIVIAL(warning) << "[install_plugin] cannot install " << file_name << ": " << ec.message();
+        else
+            BOOST_LOG_TRIVIAL(info) << "[install_plugin] installed camera player " << file_name;
+    }
+    close_zip_reader(&archive);
+    fs::remove(zip_path, ec);
+}
+#endif
 
 int GUI_App::install_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn, WasCancelledFn cancel_fn)
 {
@@ -1555,6 +1630,10 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
             return InstallStatusUnzipFailed;
         }
     }
+#if defined(__WINDOWS__)
+    if (pj_force_linux_payload)
+        install_windows_camera_player(plugin_folder, fs::temp_directory_path() / (package_name + ".win"));
+#endif
 
     if (name == "plugins") {
         std::string config_version = app_config->get_network_plugin_version();
@@ -3094,6 +3173,7 @@ bool GUI_App::on_init_inner()
     } */
     copy_network_if_available();
     on_init_network();
+    ensure_windows_camera_player();
 
     if (m_agent && m_agent->is_user_login()) {
         enable_user_preset_folder(true);
@@ -3281,6 +3361,27 @@ bool GUI_App::on_init_inner()
                        "configuration file.\nPlease note, application settings will be lost, but printer profiles will not be affected."));
     }
     return true;
+}
+
+void GUI_App::ensure_windows_camera_player()
+{
+#if defined(__WINDOWS__)
+    // The player normally arrives with the network plugin (download_plugin/install_plugin). Installs made
+    // before that existed have the plugin but no player, so fetch it once in the background.
+    if (!Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload("plugins"))
+        return;
+    const auto plugin_folder = boost::filesystem::path(data_dir()) / "plugins";
+    if (!boost::filesystem::exists(plugin_folder / Slic3r::PJarczakLinuxBridge::linux_network_library_name()) ||
+        (boost::filesystem::exists(plugin_folder / "BambuSource.dll") && boost::filesystem::exists(plugin_folder / "live555.dll")))
+        return;
+    std::thread([this, plugin_folder] {
+        const std::string package = "network_plugin.zip.win";
+        if (download_plugin("plugins", package, nullptr, nullptr, "windows") >= 0)
+            install_windows_camera_player(plugin_folder, boost::filesystem::temp_directory_path() / package);
+        else
+            BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": could not download the Windows camera player";
+    }).detach();
+#endif
 }
 
 void GUI_App::copy_network_if_available()
@@ -6123,11 +6224,13 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    // "-PLB" (PJarczakLinuxBridge) marks this as our fork build in the
-    // startup splash and About dialog, distinct from an official release.
-    // SoftFever_VERSION itself is left untouched since it also feeds
+    // FORK_RELEASE_LABEL (version.inc, e.g. "PJB.1") marks this as our fork
+    // build in the startup splash and About dialog, distinct from an official
+    // release. SoftFever_VERSION itself is left untouched since it also feeds
     // semver parsing, the updater version check, and the user agent string.
-    version_display = std::string(SoftFever_VERSION) + "-PLB";
+    version_display = SoftFever_VERSION;
+    if (std::string_view(FORK_RELEASE_LABEL).size() > 0)
+        version_display += std::string("-") + FORK_RELEASE_LABEL;
     return version_display;
 }
 

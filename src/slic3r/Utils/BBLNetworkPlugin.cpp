@@ -1,6 +1,8 @@
 #include "BBLNetworkPlugin.hpp"
 #include "NetworkAgent.hpp"
 #include "PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
+#include "PJarczakLinuxBridge/PJarczakRuntimeSync.hpp"
+#include "libslic3r_version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,10 +71,13 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
     }
 
     const bool pj_bridge = Slic3r::PJarczakLinuxBridge::enabled();
+    if (pj_bridge && !using_backup)
+        Slic3r::PJarczakLinuxBridge::sync_installed_runtime(std::filesystem::path(plugin_folder.native()));
     if (pj_bridge) {
 #if defined(_MSC_VER) || defined(_WIN32)
         _putenv_s("PJARCZAK_BAMBU_PLUGIN_DIR", plugin_folder.string().c_str());
         _putenv_s("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", version.c_str());
+        _putenv_s("PJARCZAK_RELEASE_LABEL", (std::string(SoftFever_VERSION) + "-" + FORK_RELEASE_LABEL).c_str());
 #else
         setenv("PJARCZAK_BAMBU_PLUGIN_DIR", plugin_folder.string().c_str(), 1);
         setenv("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", version.c_str(), 1);

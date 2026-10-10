@@ -1,2 +1,4 @@
 # Set the default behavior, in case people don't have core.autocrlf set.
 * text=auto
+# Shell scripts run inside WSL/Linux and break with CRLF; keep them LF in Windows checkouts too.
+*.sh text eol=lf

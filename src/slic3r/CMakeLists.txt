@@ -577,6 +577,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/AstroBox.hpp
     Utils/bambu_networking.hpp
     Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.cpp
+    Utils/PJarczakLinuxBridge/PJarczakRuntimeSync.cpp
+    Utils/PJarczakLinuxBridge/PJarczakRuntimeSync.hpp
     Utils/Bonjour.cpp
     Utils/Bonjour.hpp
     Utils/CalibUtils.cpp
