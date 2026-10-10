@@ -738,7 +738,7 @@ public:
     void            start_download(std::string url);
 
     std::string     get_plugin_url(std::string name, std::string country_code);
-    int             download_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn = nullptr, WasCancelledFn cancel_fn = nullptr);
+    int             download_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn = nullptr, WasCancelledFn cancel_fn = nullptr, const std::string& os_type_override = {});
     int             install_plugin(std::string name, std::string package_name, InstallProgressFn pro_fn = nullptr, WasCancelledFn cancel_fn = nullptr);
     std::string     get_http_url(std::string country_code, std::string path = {});
     std::string     get_model_http_url(std::string country_code);
@@ -762,6 +762,8 @@ private:
     int             updating_bambu_networking();
     bool            on_init_inner();
     void            copy_network_if_available();
+    // Windows bridge mode: fetch the matching Windows camera player (BambuSource.dll) if the network plugin is installed without it
+    void            ensure_windows_camera_player();
     bool            on_init_network(bool try_backup = false);
     void            init_networking_callbacks();
     void            init_app_config();

@@ -8,6 +8,9 @@ if(NOT DEFINED BBL_INTERNAL_TESTING)
 set(BBL_INTERNAL_TESTING "0")
 endif()
 set(SoftFever_VERSION "2.4.2")
+# Fork release label shown in the splash/About (e.g. "2.4.2-PJB.1"). Bump on every
+# release; the release tag must be v${SoftFever_VERSION}-${FORK_RELEASE_LABEL}.
+set(FORK_RELEASE_LABEL "PJB.2")
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)"
        SoftFever_VERSION_MATCH ${SoftFever_VERSION})
 set(ORCA_VERSION_MAJOR ${CMAKE_MATCH_1})

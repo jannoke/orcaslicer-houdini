@@ -241,13 +241,16 @@ std::string run_and_capture(const std::wstring& exe_path, const std::vector<std:
 DWORD run_powershell_wait(const std::filesystem::path& script_path,
                           const std::filesystem::path& package_dir,
                           const std::filesystem::path& plugin_dir,
-                          const std::string& distro)
+                          const std::string& distro,
+                          bool replace_existing = false)
 {
     std::wstring command =
         L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + script_path.wstring() +
         L"\" -PackageDir \"" + package_dir.wstring() +
         L"\" -PluginDir \"" + plugin_dir.wstring() +
         L"\" -DistroName \"" + widen(distro) + L"\"";
+    if (replace_existing)
+        command += L" -ReplaceExisting";
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -486,6 +489,55 @@ bool ensure_runtime_interactive(const std::filesystem::path& plugin_dir, const s
     return false;
 }
 
+// The release Orca tells us it is (e.g. "2.4.2-PJB.2"), via PJARCZAK_RELEASE_LABEL.
+std::string current_release_label()
+{
+    const char* value = std::getenv("PJARCZAK_RELEASE_LABEL");
+    return value ? std::string(value) : std::string();
+}
+
+std::filesystem::path release_marker_path(const std::filesystem::path& plugin_dir)
+{
+    return plugin_dir / "pjarczak_runtime_release.txt";
+}
+
+void record_runtime_release(const std::filesystem::path& plugin_dir)
+{
+    const std::string release = current_release_label();
+    if (release.empty())
+        return;
+    std::ofstream out(release_marker_path(plugin_dir), std::ios::binary | std::ios::trunc);
+    out << release;
+}
+
+// An upgrade always starts from a fresh WSL distro: when the installed release differs from the one
+// that last set the distro up, destroy and re-import it (install_runtime.ps1 -ReplaceExisting) with
+// the rootfs that shipped with this release. Without a distro nothing is replaced; the first-install
+// path in ensure_runtime_interactive() handles that. Tried at most once per process.
+void refresh_runtime_for_release(const std::filesystem::path& plugin_dir, const std::string& distro)
+{
+    static bool attempted = false;
+    const std::string release = current_release_label();
+    if (release.empty() || attempted || read_text_file_trimmed(release_marker_path(plugin_dir)) == release)
+        return;
+
+    std::string reason;
+    const std::filesystem::path script = plugin_dir / windows_wsl_import_script_file_name();
+    if (!std::filesystem::exists(script) || !probe_wsl_ready(distro, &reason))
+        return;
+    attempted = true;
+
+    const DWORD exit_code = run_powershell_wait(script, plugin_dir, plugin_dir, distro, true);
+    if (exit_code == 0) {
+        record_runtime_release(plugin_dir);
+        return;
+    }
+    const std::wstring error =
+        L"The WSL2 runtime could not be updated for this OrcaSlicer release.\n\nExit code: " + std::to_wstring(exit_code) +
+        L"\n\nRun install_runtime.ps1 -ReplaceExisting manually from the plugin directory for details.";
+    ::MessageBoxW(nullptr, error.c_str(), L"OrcaSlicer Linux Bridge", MB_ICONERROR | MB_OK | MB_SYSTEMMODAL);
+}
+
 LaunchSpec error_launch_spec(const std::string& message)
 {
     LaunchSpec spec;
@@ -552,12 +604,15 @@ LaunchSpec build_default_launch_spec()
     if (plugin_cache_dir.empty())
         return error_launch_spec("Windows plugin cache dir is not configured");
 
+    refresh_runtime_for_release(plugin_dir, distro);
+
     std::string reason;
     if (!probe_wsl_ready(distro, &reason) && !ensure_runtime_interactive(plugin_dir, distro)) {
         std::string retry_reason;
         if (!probe_wsl_ready(distro, &retry_reason))
             return error_launch_spec(retry_reason.empty() ? "WSL2 runtime is not ready" : retry_reason);
     }
+    record_runtime_release(plugin_dir);
 
     const auto bootstrap_path = resolve_bootstrap_script_path(plugin_dir);
     const std::string plugin_dir_wsl = to_wsl_path(plugin_dir);

@@ -183,4 +183,16 @@ if (WIN32)
         ${PJARCZAK_PLUGIN_CACHE_SUBDIR_SOURCE}
         DESTINATION "."
     )
+    # The WSL rootfs, Linux host binaries and certs are produced by CI (assemble_windows_runtime_bundle.ps1
+    # into <build>/OrcaSlicer) before cpack runs. Install them too, or the NSIS installer ships a bridge that
+    # install_runtime.ps1 rejects ("Missing package file"). OPTIONAL: builds without the bridge runtime skip them.
+    foreach(_pj_runtime_file
+            windows-wsl2-rootfs.tar
+            pjarczak_bambu_linux_host
+            pjarczak_bambu_linux_host_abi0
+            pjarczak_bambu_linux_host_abi1
+            ca-certificates.crt
+            slicer_base64.cer)
+        install(FILES "${CMAKE_BINARY_DIR}/OrcaSlicer/${_pj_runtime_file}" DESTINATION "." OPTIONAL)
+    endforeach()
 endif()

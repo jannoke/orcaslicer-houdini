@@ -27,7 +27,9 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         uses: actions/checkout@v6
         with:
-          sparse-checkout: .github/release-notes
+          sparse-checkout: |
+            .github/release-notes
+            version.inc
       - name: Require notes file for the tag
         if: ${{ github.event_name == 'push' }}
         shell: bash
@@ -35,6 +37,16 @@ jobs:
           notes=".github/release-notes/${GITHUB_REF_NAME}.md"
           if [[ ! -s "$notes" ]]; then
             echo "ERROR: $notes is missing or empty - commit user-facing release notes before tagging"
+            exit 1
+          fi
+      - name: Require tag to match the version.inc release label
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          ver=$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)
+          label=$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)
+          if [[ "$GITHUB_REF_NAME" != "v${ver}-${label}" ]]; then
+            echo "ERROR: tag $GITHUB_REF_NAME does not match version.inc (expected v${ver}-${label}) - bump FORK_RELEASE_LABEL before tagging"
             exit 1
           fi
 
