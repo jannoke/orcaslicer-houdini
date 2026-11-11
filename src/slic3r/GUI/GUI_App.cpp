@@ -4276,10 +4276,15 @@ bool GUI_App::on_init_network(bool try_backup)
         // configured version so the normal empty-version download flow takes over (the
         // download URL and install adoption both derive from the configured version, so it
         // must not keep pointing at the unsupported build).
-        if (!config_version.empty() && !is_supported_network_version(config_version)) {
+        // The bridge can only run the newest series (see is_bridge_supported_network_version), so an
+        // upgrade from an older PJB release moves its 02.03.00 / legacy plug-in to the latest series.
+        const bool bridge_rejects = Slic3r::PJarczakLinuxBridge::enabled() &&
+                                    !Slic3r::PJarczakLinuxBridge::is_bridge_supported_network_version(config_version);
+        if (!config_version.empty() && (!is_supported_network_version(config_version) || bridge_rejects)) {
             std::string latest = get_latest_network_version();
             BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": configured plugin version " << config_version
-                                       << " is no longer supported, falling back to " << latest;
+                                       << " is not supported" << (bridge_rejects ? " by the network bridge" : "")
+                                       << ", falling back to " << latest;
             config_version = BBLNetworkPlugin::versioned_library_exists(latest) ? latest : "";
             app_config->set_network_plugin_version(config_version);
             app_config->save();

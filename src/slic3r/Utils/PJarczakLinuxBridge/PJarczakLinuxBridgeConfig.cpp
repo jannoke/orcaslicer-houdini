@@ -394,11 +394,24 @@ std::string expected_network_abi_version()
     return env_or("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", get_latest_network_version());
 }
 
+// The forwarder and the Linux host pass plug-in structs (PrintParams, bind arguments) in the
+// layout this build declares directly, NetworkAbi::Current. Orca would call an older series
+// through its own layouts (PrintParams_0203, bind without dev_model), which the bridge does
+// not translate, so only the Current series may run behind the bridge.
+bool is_bridge_supported_network_version(const std::string& version)
+{
+    return network_plugin_abi(version) == NetworkAbi::Current;
+}
+
 bool abi_version_matches_expected(const std::string& actual_version, std::string* reason)
 {
     const auto expected = expected_network_abi_version();
     if (expected.empty() || actual_version.empty()) {
         set_reason(reason, expected.empty() ? "expected ABI version empty" : "actual ABI version empty");
+        return false;
+    }
+    if (!is_bridge_supported_network_version(actual_version)) {
+        set_reason(reason, "plug-in " + actual_version + " is not the series the bridge supports (" + get_latest_network_version() + ")");
         return false;
     }
     if (actual_version == expected) {

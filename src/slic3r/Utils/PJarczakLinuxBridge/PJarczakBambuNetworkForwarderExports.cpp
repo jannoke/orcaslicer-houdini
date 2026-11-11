@@ -421,7 +421,7 @@ PJBRIDGE_EXPORT int bambu_network_bind_detect(void* agent, std::string dev_ip, s
     return j.value("value", 0);
 }
 PJBRIDGE_EXPORT int bambu_network_report_consent(void* agent, std::string expand) { auto* a = require_agent(agent); return a ? RpcClient::instance().invoke_int("net.report_consent", {{"agent", agent_id(a)}, {"expand", expand}}) : invalid_handle(); }
-PJBRIDGE_EXPORT int bambu_network_bind(void* agent, std::string dev_ip, std::string dev_id, std::string sec_link, std::string timezone, bool improved, OnUpdateStatusFn update) { auto* a = require_agent(agent); return invoke_job_update_only("net.bind", "bind", a, {{"dev_ip", dev_ip}, {"dev_id", dev_id}, {"sec_link", sec_link}, {"timezone", timezone}, {"improved", improved}}, std::move(update)); }
+PJBRIDGE_EXPORT int bambu_network_bind(void* agent, std::string dev_ip, std::string dev_id, std::string dev_model, std::string sec_link, std::string timezone, bool improved, OnUpdateStatusFn update) { auto* a = require_agent(agent); return invoke_job_update_only("net.bind", "bind", a, {{"dev_ip", dev_ip}, {"dev_id", dev_id}, {"dev_model", dev_model}, {"sec_link", sec_link}, {"timezone", timezone}, {"improved", improved}}, std::move(update)); }
 PJBRIDGE_EXPORT int bambu_network_unbind(void* agent, std::string dev_id) { auto* a = require_agent(agent); return a ? RpcClient::instance().invoke_int("net.unbind", {{"agent", agent_id(a)}, {"dev_id", dev_id}}) : invalid_handle(); }
 PJBRIDGE_EXPORT std::string bambu_network_get_bambulab_host(void* agent)
 {
@@ -488,7 +488,21 @@ PJBRIDGE_EXPORT int bambu_network_put_rating_picture_oss(void* agent, std::strin
 PJBRIDGE_EXPORT int bambu_network_get_model_mall_rating(void* agent, int job_id, std::string& rating_result, unsigned int& http_code, std::string& http_error) { auto* a = require_agent(agent); if (!a) return invalid_handle(); const auto j = ok_or_error(RpcClient::instance().invoke_json("net.get_model_mall_rating", {{"agent", agent_id(a)}, {"job_id", job_id}})); rating_result = j.value("rating_result", std::string()); http_code = j.value("http_code", 0u); http_error = j.value("http_error", std::string()); return j.value("value", 0); }
 PJBRIDGE_EXPORT int bambu_network_get_mw_user_preference(void* agent, std::function<void(std::string)> callback) { auto* a = require_agent(agent); return invoke_string_callback("net.get_mw_user_preference", a, {{"agent", agent_id(a)}}, callback); }
 PJBRIDGE_EXPORT int bambu_network_get_mw_user_4ulist(void* agent, int seed, int limit, std::function<void(std::string)> callback) { auto* a = require_agent(agent); return invoke_string_callback("net.get_mw_user_4ulist", a, {{"agent", agent_id(a)}, {"seed", seed}, {"limit", limit}}, callback); }
-PJBRIDGE_EXPORT int bambu_network_get_hms_snapshot(void* agent, std::string dev_id, std::string file_name, std::function<void(std::string, int)> callback) { auto* a = require_agent(agent); return invoke_string_int_callback("net.get_hms_snapshot", a, {{"agent", agent_id(a)}, {"dev_id", dev_id}, {"file_name", file_name}}, callback); }
+PJBRIDGE_EXPORT int bambu_network_get_hms_snapshot(void* agent, std::string& dev_id, std::string& file_name, std::function<void(std::string, int)> callback) { auto* a = require_agent(agent); return invoke_string_int_callback("net.get_hms_snapshot", a, {{"agent", agent_id(a)}, {"dev_id", dev_id}, {"file_name", file_name}}, callback); }
+static int invoke_http_body(const char* method, BridgeAgent* a, nlohmann::json payload, std::string* http_body)
+{
+    if (!a) return invalid_handle();
+    payload["agent"] = agent_id(a);
+    const auto j = ok_or_error(RpcClient::instance().invoke_json(method, payload));
+    if (http_body) *http_body = j.value("http_body", std::string());
+    return j.value("value", 0);
+}
+PJBRIDGE_EXPORT int bambu_network_get_filament_spools(void* agent, FilamentQueryParams params, std::string* http_body) { return invoke_http_body("net.get_filament_spools", require_agent(agent), {{"params", JsonBridge::to_json(params)}}, http_body); }
+PJBRIDGE_EXPORT int bambu_network_create_filament_spool(void* agent, std::string request_body, std::string* http_body) { return invoke_http_body("net.create_filament_spool", require_agent(agent), {{"request_body", request_body}}, http_body); }
+PJBRIDGE_EXPORT int bambu_network_update_filament_spool(void* agent, std::string spool_id, std::string request_body, std::string* http_body) { return invoke_http_body("net.update_filament_spool", require_agent(agent), {{"spool_id", spool_id}, {"request_body", request_body}}, http_body); }
+PJBRIDGE_EXPORT int bambu_network_delete_filament_spools(void* agent, FilamentDeleteParams params, std::string* http_body) { return invoke_http_body("net.delete_filament_spools", require_agent(agent), {{"params", JsonBridge::to_json(params)}}, http_body); }
+PJBRIDGE_EXPORT int bambu_network_get_filament_config(void* agent, std::string* http_body) { return invoke_http_body("net.get_filament_config", require_agent(agent), nlohmann::json::object(), http_body); }
+PJBRIDGE_EXPORT int bambu_network_sync_ams_filaments(void* agent, AmsSyncParams params, std::string* http_body) { return invoke_http_body("net.sync_ams_filaments", require_agent(agent), {{"params", JsonBridge::to_json(params)}}, http_body); }
 PJBRIDGE_EXPORT const char* bambu_network_get_last_error_msg() { return g_last_error.c_str(); }
 
 PJBRIDGE_EXPORT int Bambu_Create(Bambu_Tunnel* tunnel, char const* path)

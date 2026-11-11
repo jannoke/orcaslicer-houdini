@@ -943,7 +943,11 @@ std::vector<NetworkLibraryVersionInfo> get_all_available_versions(const std::str
     std::vector<NetworkLibraryVersionInfo> result;
     std::set<std::string> all_known_versions;
 
+    // Behind the network bridge only the series it can forward is selectable.
+    const bool bridge = Slic3r::PJarczakLinuxBridge::enabled();
     for (size_t i = 0; i < AVAILABLE_NETWORK_VERSIONS_COUNT; ++i) {
+        if (bridge && !Slic3r::PJarczakLinuxBridge::is_bridge_supported_network_version(AVAILABLE_NETWORK_VERSIONS[i].version))
+            continue;
         result.push_back(NetworkLibraryVersionInfo::from_static(AVAILABLE_NETWORK_VERSIONS[i]));
         if (!result.back().warning.empty())
             result.back().warning = GUI::I18N::translate_utf8(result.back().warning);
@@ -963,6 +967,8 @@ std::vector<NetworkLibraryVersionInfo> get_all_available_versions(const std::str
         if (is_series_managed_version(version))
             continue;
         if (!is_supported_network_version(version))
+            continue;
+        if (bridge && !Slic3r::PJarczakLinuxBridge::is_bridge_supported_network_version(version))
             continue;
         const std::string series = network_plugin_series(version);
         const std::string sfx    = version.size() > series.size() ? version.substr(series.size()) : version;
