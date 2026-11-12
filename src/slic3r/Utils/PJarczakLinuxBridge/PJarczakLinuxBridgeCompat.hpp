@@ -16,6 +16,12 @@ public:
     std::string model_id;
     std::string model_name;
     std::string profile_name;
+    // Same members, same order as libslic3r/ProjectTask.hpp: the 02.08.04 plug-in fills the
+    // object in place through get_subtask(), so a shorter struct gets written past its end.
+    std::string design_title;
+    std::string title;
+    std::string instance_title;
+    std::string create_client;
 };
 typedef std::function<void(BBLModelTask* subtask)> OnGetSubTaskFn;
 }
@@ -38,6 +44,10 @@ inline nlohmann::json model_task_to_json(const Slic3r::BBLModelTask* task)
         {"model_id", task->model_id},
         {"model_name", task->model_name},
         {"profile_name", task->profile_name},
+        {"design_title", task->design_title},
+        {"title", task->title},
+        {"instance_title", task->instance_title},
+        {"create_client", task->create_client},
     };
 }
 
@@ -51,6 +61,10 @@ inline void json_to_model_task(const nlohmann::json& j, Slic3r::BBLModelTask& ta
     task.model_id = j.value("model_id", std::string());
     task.model_name = j.value("model_name", std::string());
     task.profile_name = j.value("profile_name", std::string());
+    task.design_title = j.value("design_title", std::string());
+    task.title = j.value("title", std::string());
+    task.instance_title = j.value("instance_title", std::string());
+    task.create_client = j.value("create_client", std::string());
 }
 
 }

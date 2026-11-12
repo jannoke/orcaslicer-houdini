@@ -91,7 +91,11 @@ jobs:
           rm -rf build install-dir out
           mkdir -p out
 
-          cmake -S . -B build -G "Ninja Multi-Config" \
+          # Single-config Ninja: under a multi-config generator 2.5.0 copies the
+
+          # FFmpeg libs to build/src/<config> but installs them from build/src.
+
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="${PWD}/deps/build/OrcaSlicer_dep/usr/local" \
             -DSLIC3R_STATIC=1 \
             -DSLIC3R_GTK=3 \

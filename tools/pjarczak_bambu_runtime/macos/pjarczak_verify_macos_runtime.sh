@@ -3,7 +3,6 @@ set -euo pipefail
 
 PACKAGE_DIR=""
 PLUGIN_DIR=""
-PLUGIN_CACHE_DIR=""
 ALLOW_MISSING_LINUX_PLUGIN=0
 
 while [[ $# -gt 0 ]]; do
@@ -17,7 +16,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -PluginCacheDir)
-            PLUGIN_CACHE_DIR="${2:-}"
+            # Accepted for parity with the Windows scripts; the macOS bridge
+            # has no separate plug-in cache.
             shift 2
             ;;
         -AllowMissingLinuxPlugin)

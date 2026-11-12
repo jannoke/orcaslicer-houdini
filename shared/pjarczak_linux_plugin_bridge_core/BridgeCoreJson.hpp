@@ -41,6 +41,7 @@ inline nlohmann::json to_json(const BBL::PrintParams& p)
         {"task_vibration_cali", p.task_vibration_cali},
         {"task_layer_inspect", p.task_layer_inspect},
         {"task_record_timelapse", p.task_record_timelapse},
+        {"task_timelapse_use_internal", p.task_timelapse_use_internal},
         {"task_use_ams", p.task_use_ams},
         {"task_bed_type", p.task_bed_type},
         {"extra_options", p.extra_options},
@@ -49,7 +50,10 @@ inline nlohmann::json to_json(const BBL::PrintParams& p)
         {"auto_offset_cali", p.auto_offset_cali},
         {"extruder_cali_manual_mode", p.extruder_cali_manual_mode},
         {"task_ext_change_assist", p.task_ext_change_assist},
-        {"try_emmc_print", p.try_emmc_print}
+        {"try_emmc_print", p.try_emmc_print},
+        {"svc_context", p.svc_context},
+        {"slicer_uid", p.slicer_uid},
+        {"queue_plate_id", p.queue_plate_id}
     };
 }
 
@@ -89,6 +93,7 @@ inline BBL::PrintParams print_params_from_json(const nlohmann::json& j)
     p.task_vibration_cali = j.value("task_vibration_cali", false);
     p.task_layer_inspect = j.value("task_layer_inspect", false);
     p.task_record_timelapse = j.value("task_record_timelapse", false);
+    p.task_timelapse_use_internal = j.value("task_timelapse_use_internal", false);
     p.task_use_ams = j.value("task_use_ams", false);
     p.task_bed_type = j.value("task_bed_type", std::string());
     p.extra_options = j.value("extra_options", std::string());
@@ -98,6 +103,9 @@ inline BBL::PrintParams print_params_from_json(const nlohmann::json& j)
     p.extruder_cali_manual_mode = j.value("extruder_cali_manual_mode", -1);
     p.task_ext_change_assist = j.value("task_ext_change_assist", false);
     p.try_emmc_print = j.value("try_emmc_print", false);
+    p.svc_context = j.value("svc_context", std::string());
+    p.slicer_uid = j.value("slicer_uid", std::string());
+    p.queue_plate_id = j.value("queue_plate_id", std::string());
     return p;
 }
 
@@ -122,6 +130,81 @@ inline BBL::PublishParams publish_params_from_json(const nlohmann::json& j)
     p.project_model_id = j.value("project_model_id", std::string());
     p.design_id = j.value("design_id", std::string());
     p.config_filename = j.value("config_filename", std::string());
+    return p;
+}
+
+
+inline nlohmann::json to_json(const BBL::FilamentQueryParams& p)
+{
+    return {{"category", p.category}, {"status", p.status}, {"spool_id", p.spool_id}, {"rfid", p.rfid}, {"offset", p.offset}, {"limit", p.limit}};
+}
+
+inline BBL::FilamentQueryParams filament_query_params_from_json(const nlohmann::json& j)
+{
+    BBL::FilamentQueryParams p{};
+    p.category = j.value("category", std::string());
+    p.status = j.value("status", std::string());
+    p.spool_id = j.value("spool_id", std::string());
+    p.rfid = j.value("rfid", std::string());
+    p.offset = j.value("offset", 0);
+    p.limit = j.value("limit", 20);
+    return p;
+}
+
+inline nlohmann::json to_json(const BBL::FilamentDeleteParams& p)
+{
+    return {{"ids", p.ids}, {"rfids", p.rfids}};
+}
+
+inline BBL::FilamentDeleteParams filament_delete_params_from_json(const nlohmann::json& j)
+{
+    BBL::FilamentDeleteParams p{};
+    p.ids = j.value("ids", std::vector<std::string>());
+    p.rfids = j.value("rfids", std::vector<std::string>());
+    return p;
+}
+
+inline nlohmann::json to_json(const BBL::AmsSyncParams& p)
+{
+    nlohmann::json items = nlohmann::json::array();
+    for (const auto& i : p.items) {
+        items.push_back({
+            {"RFID", i.RFID}, {"filamentVendor", i.filamentVendor}, {"filamentType", i.filamentType},
+            {"filamentName", i.filamentName}, {"filamentId", i.filamentId}, {"isSupport", i.isSupport},
+            {"color", i.color}, {"colorType", i.colorType}, {"colors", i.colors}, {"netWeight", i.netWeight},
+            {"totalNetWeight", i.totalNetWeight}, {"trayIdName", i.trayIdName}, {"note", i.note},
+            {"amsSn", i.amsSn}, {"slotId", i.slotId}, {"amsId", i.amsId}, {"amsType", i.amsType},
+            {"createNew", i.createNew}});
+    }
+    return {{"devId", p.devId}, {"items", items}};
+}
+
+inline BBL::AmsSyncParams ams_sync_params_from_json(const nlohmann::json& j)
+{
+    BBL::AmsSyncParams p{};
+    p.devId = j.value("devId", std::string());
+    for (const auto& i : j.value("items", nlohmann::json::array())) {
+        BBL::AmsSyncItem item{};
+        item.RFID = i.value("RFID", std::string());
+        item.filamentVendor = i.value("filamentVendor", std::string());
+        item.filamentType = i.value("filamentType", std::string());
+        item.filamentName = i.value("filamentName", std::string());
+        item.filamentId = i.value("filamentId", std::string());
+        item.isSupport = i.value("isSupport", false);
+        item.color = i.value("color", std::string());
+        item.colorType = i.value("colorType", 0);
+        item.colors = i.value("colors", std::vector<std::string>());
+        item.netWeight = i.value("netWeight", 0);
+        item.totalNetWeight = i.value("totalNetWeight", 0);
+        item.trayIdName = i.value("trayIdName", std::string());
+        item.note = i.value("note", std::string());
+        item.amsSn = i.value("amsSn", std::string());
+        item.slotId = i.value("slotId", std::string());
+        item.amsId = i.value("amsId", 0);
+        item.amsType = i.value("amsType", 0);
+        item.createNew = i.value("createNew", false);
+        p.items.push_back(std::move(item));
+    }
     return p;
 }
 
