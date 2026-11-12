@@ -162,9 +162,12 @@ jobs:
         shell: pwsh
         run: echo "key=windows-x64-cache-orcaslicer_deps-build-${{ hashFiles('deps/**') }}" >> $env:GITHUB_OUTPUT
 
+      # Restore and save are separate steps so a deps build is cached as soon
+      # as it succeeds; actions/cache only saves when the whole job passes,
+      # and a later failure would throw away ~40 minutes of deps.
       - name: Cache Windows deps
         id: cache_deps
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
           key: ${{ steps.deps_key.outputs.key }}
@@ -180,6 +183,13 @@ jobs:
         run: |
           .\build_win.bat -d --arch x64 --msvc --msbuild
           if ($LASTEXITCODE -ne 0) { throw "build_win.bat -d failed with exit code $LASTEXITCODE" }
+
+      - name: Save Windows deps cache
+        if: steps.cache_deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
+          key: ${{ steps.deps_key.outputs.key }}
 
       # PCH'd TUs need ~3 GB each and /MP starts one cl.exe per CPU, so cap
       # /MP by free RAM (cl appends _CL_ after the project's /MP; last wins).
@@ -231,8 +241,11 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'wsl --install --no-distribution failed' }
           }
 
+          # The runner service account cannot always install a WSL update
+          # (Windows Installer error 1601, e.g. while a reboot is pending).
+          # The installed WSL is enough as long as it reports ready below.
           & $wsl --update
-          if ($LASTEXITCODE -ne 0) { throw 'wsl --update failed' }
+          if ($LASTEXITCODE -ne 0) { Write-Warning "wsl --update failed (exit $LASTEXITCODE); continuing with the installed WSL" }
 
           & $wsl --status
           if ($LASTEXITCODE -ne 0) { throw 'WSL is still not ready after install/update' }
