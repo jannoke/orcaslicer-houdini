@@ -4087,6 +4087,7 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
     // download_plugin()/install_plugin()), not the per-platform library names handled
     // below, and it isn't versioned the same way - handle it as its own path.
     if (Slic3r::PJarczakLinuxBridge::enabled() && Slic3r::PJarczakLinuxBridge::use_bridge_network_module()) {
+        had_cache = !cached_version.empty();
         if (!boost::filesystem::exists(plugin_folder))
             boost::filesystem::create_directory(plugin_folder);
 
@@ -4112,6 +4113,7 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
             const auto src = cache_folder / file_name;
             if (!boost::filesystem::exists(src))
                 continue;
+            had_cache = true;
             if (file_name != Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name()) {
                 std::string validate_reason;
                 if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(src.string(), &validate_reason)) {
@@ -4120,7 +4122,7 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
                 }
             }
             if (!copy_one(src, plugin_folder / file_name))
-                return;
+                return false;
             fs::remove(src);
         }
 
@@ -4129,7 +4131,7 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
             std::string validate_reason;
             if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_set_against_manifest(plugin_folder, &validate_reason)) {
                 BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": manifest validation failed after copy: " << validate_reason;
-                return;
+                return false;
             }
         }
 
@@ -4139,8 +4141,7 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
         }
         if (boost::filesystem::exists(changelog_file))
             fs::remove(changelog_file);
-        app_config->set("update_network_plugin", "false");
-        return;
+        return true;
     }
 
     if (cached_version.empty()) {
