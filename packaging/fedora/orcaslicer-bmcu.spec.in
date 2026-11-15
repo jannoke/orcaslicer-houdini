@@ -33,6 +33,10 @@ printers keep working. Installed in /opt/orcaslicer; start it with orca-slicer-b
 %autosetup -n %{name}-%{version}
 
 %build
+# rpmbuild exports PKG_CONFIG_PATH with the system pkgconfig folders, which pkg-config then
+# searches before the bundled dependencies: the dependencies' FindOpenSSL reads the system
+# openssl.pc (Libs.private: -lz) instead of the bundled OpenSSL's and fails on a missing static zlib.
+unset PKG_CONFIG_PATH
 # Size parallelism by RAM, not CPUs, like the CI job: PCH'd Orca files need ~3-4 GB each.
 mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
 size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > %{_smp_build_ncpus} )) && j=%{_smp_build_ncpus}; echo "$j"; }

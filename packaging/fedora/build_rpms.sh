@@ -51,7 +51,7 @@ image="$(build_image "${1:-44}")"
 srpm="$(run_container -v "$PROJECT_DIR:/src:ro,z" -v "$OUT:/out:z" "$image" bash -euo pipefail -c "
     git config --global --add safe.directory /src
     /src/packaging/fedora/make_srpm.sh /out
-    $chown_out" | tee /dev/stderr | sed -n 's|^SRPM: .*/||p')"
+    $chown_out" | tee >(cat >&2) | sed -n 's|^SRPM: .*/||p')"
 [[ -n "$srpm" ]] || { echo "make_srpm.sh made no SRPM" >&2; exit 1; }
 echo "SRPM: $OUT/srpm/$srpm"
 
