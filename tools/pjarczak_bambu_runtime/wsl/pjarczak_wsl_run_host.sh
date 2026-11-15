@@ -149,6 +149,17 @@ unset APPDATA LOCALAPPDATA USERPROFILE HOMEDRIVE HOMEPATH TEMP TMP TMPDIR
 
 RUNTIME_BASE="${PJARCZAK_BAMBU_WSL_RUNTIME_DIR:-$HOME/.pjarczak-bambu-runtime}"
 mkdir -p "$RUNTIME_BASE"
+
+# Windows discards the host's stderr, so keep it (this script's lines, [PJBRIDGE] lines,
+# camera messages, crash backtraces) in a file inside the distro. stdout is the RPC channel.
+if [ "$MODE" = "run" ]; then
+    HOST_LOG="$RUNTIME_BASE/host.log"
+    if [ -f "$HOST_LOG" ] && [ "$(wc -c < "$HOST_LOG")" -gt 5242880 ]; then
+        mv -f "$HOST_LOG" "$HOST_LOG.1"
+    fi
+    exec 2>>"$HOST_LOG"
+    log "---- host start $(date -u '+%Y-%m-%dT%H:%M:%SZ') pid=$$"
+fi
 SOURCE_LIST="$(mktemp "$RUNTIME_BASE/.sources.XXXXXX")"
 trap 'rm -f "$SOURCE_LIST"' EXIT INT TERM
 

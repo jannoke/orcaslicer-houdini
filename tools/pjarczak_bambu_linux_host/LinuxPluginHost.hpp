@@ -58,6 +58,7 @@ public:
     void dispatch_logger_event(std::int64_t tunnel_handle, int level, const std::string& message);
     std::string refresh_camera_url_for_ft(const std::string& device, const std::string& dev_ver, const std::string& channel);
     std::string refresh_agora_url_ptr_string() const;
+    std::string rewrite_refresh_url(std::string url) const;
 
 private:
     void load_modules();

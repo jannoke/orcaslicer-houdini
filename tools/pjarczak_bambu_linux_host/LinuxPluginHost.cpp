@@ -8,6 +8,7 @@
 #include "../../src/slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 #include <dlfcn.h>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
@@ -27,14 +28,20 @@ namespace {
 
 std::atomic<Slic3r::PJarczakLinuxBridge::LinuxPluginHost*> g_active_host{nullptr};
 
+// Stands in for Orca's refresh_agora_url() (see rewrite_refresh_url()). libBambuSource
+// calls it from an Agora event handler while holding that handler's mutex, and Orca's
+// version answers later from the plug-in's thread, so answer from a thread here too.
 extern "C" void host_refresh_agora_url(char const* device, char const* dev_ver, char const* channel, void* context, void (*callback)(void* context, char const* url))
 {
-    auto* host = g_active_host.load();
-    std::string url;
-    if (host)
-        url = host->refresh_camera_url_for_ft(device ? device : "", dev_ver ? dev_ver : "", channel ? channel : "");
-    if (callback)
-        callback(context, url.c_str());
+    std::thread([device = std::string(device ? device : ""), dev_ver = std::string(dev_ver ? dev_ver : ""),
+                 channel = std::string(channel ? channel : ""), context, callback] {
+        auto* host = g_active_host.load();
+        std::string url;
+        if (host)
+            url = host->refresh_camera_url_for_ft(device, dev_ver, channel);
+        if (callback)
+            callback(context, url.c_str());
+    }).detach();
 }
 
 extern "C" {
@@ -350,6 +357,8 @@ LinuxPluginHost::~LinuxPluginHost()
 
 void LinuxPluginHost::dispatch_logger_event(std::int64_t tunnel_handle, int level, const std::string& message)
 {
+    // Also into the host log: if the host dies, the last camera messages never reach Orca.
+    host_log_json("tunnel.log", {{"tunnel", tunnel_handle}, {"level", level}, {"message", message}});
     queue_tunnel_event(tunnel_handle, "logger", {{"level", level}, {"message", message}});
 }
 
@@ -366,33 +375,55 @@ std::string LinuxPluginHost::refresh_camera_url_for_ft(const std::string& device
     }
     if (!agent)
         return {};
-    std::mutex m;
-    std::condition_variable cv;
-    bool ready = false;
-    std::string result;
+    // Shared, so a plug-in callback that arrives after the timeout has somewhere to write.
+    struct Reply {
+        std::mutex m;
+        std::condition_variable cv;
+        bool ready{false};
+        std::string result;
+    };
+    auto reply = std::make_shared<Reply>();
     std::string dev_arg = device + "|" + dev_ver + "|\"agora\"|" + channel;
-    const int ret = f(agent, dev_arg, [&](std::string value) {
+    const int ret = f(agent, dev_arg, [reply](std::string value) {
         {
-            std::lock_guard<std::mutex> lock(m);
-            result = std::move(value);
-            ready = true;
+            std::lock_guard<std::mutex> lock(reply->m);
+            reply->result = std::move(value);
+            reply->ready = true;
         }
-        cv.notify_one();
+        reply->cv.notify_one();
     });
     if (ret != 0)
         return {};
-    std::unique_lock<std::mutex> lock(m);
-    if (!cv.wait_for(lock, 20s, [&] { return ready; }))
+    std::unique_lock<std::mutex> lock(reply->m);
+    if (!reply->cv.wait_for(lock, 20s, [&] { return reply->ready; }))
         return {};
-    return result;
+    return reply->result;
 }
 
 std::string LinuxPluginHost::refresh_agora_url_ptr_string() const
 {
+    // libBambuSource reads refresh_url with strtoll(value, nullptr, 16).
     const auto value = reinterpret_cast<std::uintptr_t>(&host_refresh_agora_url);
     std::ostringstream ss;
-    ss << value;
+    ss << std::hex << value;
     return ss.str();
+}
+
+std::string LinuxPluginHost::rewrite_refresh_url(std::string url) const
+{
+    // Orca appends "&refresh_url=<address of its refresh_agora_url()>" to camera URLs, and
+    // libBambuSource calls that address when an Agora token is about to expire (X1E/H2D/X2D
+    // style printers). Through the bridge it is an address in the Windows/macOS process, so
+    // calling it here crashed the host and took every printer's connection down with it.
+    static const std::string key = "refresh_url=";
+    for (std::size_t pos = url.find(key); pos != std::string::npos; pos = url.find(key, pos + 1)) {
+        if (pos == 0 || (url[pos - 1] != '?' && url[pos - 1] != '&'))
+            continue;
+        const std::size_t begin = pos + key.size();
+        const std::size_t end = std::min(url.find('&', begin), url.size());
+        url.replace(begin, end - begin, refresh_agora_url_ptr_string());
+    }
+    return url;
 }
 
 void LinuxPluginHost::ensure_main_dispatcher()
@@ -963,7 +994,11 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         auto g7 = net<std::string (*)(void*)>("bambu_network_build_logout_cmd"); if (g7) r["logout_cmd"] = g7(a);
         auto g8 = net<std::string (*)(void*)>("bambu_network_build_login_info"); if (g8) r["login_info"] = g8(a);
         auto g9 = net<std::string (*)(void*)>("bambu_network_get_bambulab_host"); if (g9) r["bambulab_host"] = g9(a);
-        host_log_json("net.change_user", r);
+        // The reply carries the login token (user_info, login_cmd, login_info); the log now
+        // goes to a file inside WSL, so keep secrets out of it.
+        host_log_json("net.change_user", {{"value", ret}, {"logged_in", r.value("logged_in", false)},
+                                          {"user_info_was_normalized", r.value("user_info_was_normalized", false)},
+                                          {"bambulab_host", r.value("bambulab_host", std::string())}});
         return r;
     }
 
@@ -1189,7 +1224,8 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         auto f = net<fn_ft_tunnel_create>("ft_tunnel_create");
         if (!f) return not_supported(method);
         FT_TunnelHandle* tunnel = nullptr;
-        const int ret = static_cast<int>(f(payload.value("url", std::string()).c_str(), &tunnel));
+        const std::string url = rewrite_refresh_url(payload.value("url", std::string()));
+        const int ret = static_cast<int>(f(url.c_str(), &tunnel));
         if (ret != 0 || !tunnel)
             return {{"ok", true}, {"value", ret}, {"tunnel", 0}};
         const auto id = m_next_ft_tunnel++;
@@ -1405,7 +1441,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         auto f = src<int (*)(Bambu_Tunnel*, const char*)>("Bambu_Create");
         if (!f) return not_supported(method);
         Bambu_Tunnel tunnel = nullptr;
-        const std::string path = windows_path_to_wsl(payload.value("path", std::string()));
+        const std::string path = rewrite_refresh_url(windows_path_to_wsl(payload.value("path", std::string())));
         const int ret = f(&tunnel, path.c_str());
         if (ret != 0)
             return {{"ok", true}, {"value", ret}, {"tunnel", 0}};
