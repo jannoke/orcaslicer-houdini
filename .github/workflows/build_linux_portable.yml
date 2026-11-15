@@ -167,6 +167,7 @@ jobs:
           fi
 
           echo "APP_BIN=$app_bin" >> "$GITHUB_ENV"
+          packaging/linux/bundle_python.sh deps/build/OrcaSlicer_dep/usr/local/libpython install-dir
           tar -C install-dir -czf "out/OrcaSlicer-BMCU_LinuxDir_${DIST_ID}_amd64_${VER}.tar.gz" .
 
       - name: Linux - build .deb from install-dir
@@ -198,28 +199,17 @@ jobs:
           Description: dummy control for dpkg-shlibdeps
           EOF
 
-          depends=""
-          if [ -x "pkgroot/opt/orcaslicer/${APP_BIN}" ]; then
-            set +e
-            out="$(dpkg-shlibdeps --ignore-missing-info -O \
-              -lpkgroot/opt/orcaslicer/bin \
-              -lpkgroot/opt/orcaslicer/lib \
-              -lpkgroot/opt/orcaslicer/lib64 \
-              pkgroot/opt/orcaslicer/${APP_BIN} 2>&1)"
-            rc=$?
-            set -e
-
-            if [ $rc -eq 0 ]; then
-              depends="$(printf "%s\n" "$out" | sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
-            else
-              echo "WARN: dpkg-shlibdeps failed:"
-              echo "$out"
-            fi
-          fi
-
-          if [[ -z "$depends" ]]; then
-            depends="libc6, libstdc++6, libgcc-s1"
-          fi
+          # Depends: the system libraries Orca and its bundled Python runtime (lib/python) load.
+          # Libraries shipped in the package are found through -l. A failure here used to fall
+          # back to libc6 only, which made a package that installs but doesn't start.
+          opt=pkgroot/opt/orcaslicer
+          depends="$(dpkg-shlibdeps --ignore-missing-info -O \
+            -l"$opt" -l"$opt/bin" -l"$opt/lib" -l"$opt/lib/python/lib" \
+            "$opt/${APP_BIN}" "$opt"/lib/python/lib/libpython3*.so.1.0 \
+            "$opt"/lib/python/lib/python3*/lib-dynload/*.so |
+            sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
+          [[ -n "$depends" ]] || { echo "ERROR: dpkg-shlibdeps found no Depends"; exit 1; }
+          echo "Depends: $depends"
 
           cat > pkgroot/DEBIAN/control <<EOF
           Package: orcaslicer-bmcu

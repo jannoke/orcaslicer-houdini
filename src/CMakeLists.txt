@@ -163,8 +163,9 @@ elseif (UNIX AND NOT WIN32)
     set_target_properties(OrcaSlicer PROPERTIES
         # Build tree + AppImage, which packages the build-tree binary.
         BUILD_RPATH "$ORIGIN/python/lib;$ORIGIN/../lib/python/lib"
-        # Flatpak (cmake --install).
-        INSTALL_RPATH "$ORIGIN/../libpython/lib")
+        # Flatpak and the PJB /opt/orcaslicer packages (cmake --install). Keeps $ORIGIN
+        # (CMAKE_INSTALL_RPATH) for the FFmpeg libraries installed next to the binary.
+        INSTALL_RPATH "$ORIGIN;$ORIGIN/../libpython/lib")
 endif ()
 
 if (NOT WIN32 AND NOT APPLE)

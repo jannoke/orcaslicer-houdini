@@ -13,6 +13,12 @@
 # have not been tried with Orca's static dependencies.
 %undefine _auto_set_build_flags
 %global _lto_cflags %{nil}
+# The Python runtime bundled in /opt/orcaslicer/lib/python is private to Orca: don't offer its
+# libpython to other packages, and don't require a system one.
+%global __provides_exclude_from ^/opt/orcaslicer/lib/python/.*$
+%global __requires_exclude ^libpython3\\.[0-9]+\\.so.*$
+# The built dependencies: orca_deps_prefix, or what %%build builds (relative to the source dir).
+%global deps_dir %{?orca_deps_prefix}%{!?orca_deps_prefix:deps/build/OrcaSlicer_dep}
 
 Name:           orcaslicer-bmcu
 Version:        @RPM_VERSION@
@@ -41,12 +47,10 @@ unset PKG_CONFIG_PATH
 mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
 size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > %{_smp_build_ncpus} )) && j=%{_smp_build_ncpus}; echo "$j"; }
 
-%if 0%{?orca_deps_prefix:1}
-deps_prefix="%{orca_deps_prefix}"
-%else
+%if 0%{!?orca_deps_prefix:1}
 ./build_linux.sh -drlL -j "$(size_jobs 3)" %{?orca_dl_cache:-- -DDEP_DOWNLOAD_DIR=%{orca_dl_cache}}
-deps_prefix="${PWD}/deps/build/OrcaSlicer_dep"
 %endif
+deps_prefix="$(realpath "%{deps_dir}")"
 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="${deps_prefix}/usr/local" \
@@ -63,6 +67,7 @@ cmake --build build -j"$(size_jobs 4)"
 %install
 cmake --install build
 test -x install-dir/bin/orca-slicer
+packaging/linux/bundle_python.sh "%{deps_dir}/usr/local/libpython" install-dir
 mkdir -p install-dir/resources/i18n
 cp -a resources/i18n/. install-dir/resources/i18n/
 mkdir -p %{buildroot}/opt/orcaslicer %{buildroot}%{_bindir}
