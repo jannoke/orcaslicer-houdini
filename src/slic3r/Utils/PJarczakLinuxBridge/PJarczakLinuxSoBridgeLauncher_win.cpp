@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace Slic3r::PJarczakLinuxBridge {
@@ -489,11 +490,24 @@ bool ensure_runtime_interactive(const std::filesystem::path& plugin_dir, const s
     return false;
 }
 
-// The release Orca tells us it is (e.g. "2.4.2-PJB.2"), via PJARCZAK_RELEASE_LABEL.
-std::string current_release_label()
+// What the WSL distro is set up from: the release Orca tells us it is (e.g. "2.5.1-PJB.1", via
+// PJARCZAK_RELEASE_LABEL) plus the size and time of the rootfs shipped with it. Every build makes a
+// new rootfs, so a test build that keeps the label still counts as new, and nobody has to delete the
+// marker by hand. PJarczakRuntimeSync copies the rootfs with its time, so the same build never looks
+// new. Empty when Orca sets no label.
+std::string current_release_label(const std::filesystem::path& plugin_dir)
 {
     const char* value = std::getenv("PJARCZAK_RELEASE_LABEL");
-    return value ? std::string(value) : std::string();
+    if (!value || !*value)
+        return {};
+    std::string release(value);
+    std::error_code ec;
+    const auto rootfs = plugin_dir / windows_wsl_rootfs_file_name();
+    const auto size = std::filesystem::file_size(rootfs, ec);
+    const auto time = ec ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(rootfs, ec);
+    if (!ec)
+        release += " rootfs " + std::to_string(size) + " " + std::to_string(time.time_since_epoch().count());
+    return release;
 }
 
 std::filesystem::path release_marker_path(const std::filesystem::path& plugin_dir)
@@ -503,21 +517,21 @@ std::filesystem::path release_marker_path(const std::filesystem::path& plugin_di
 
 void record_runtime_release(const std::filesystem::path& plugin_dir)
 {
-    const std::string release = current_release_label();
+    const std::string release = current_release_label(plugin_dir);
     if (release.empty())
         return;
     std::ofstream out(release_marker_path(plugin_dir), std::ios::binary | std::ios::trunc);
     out << release;
 }
 
-// An upgrade always starts from a fresh WSL distro: when the installed release differs from the one
-// that last set the distro up, destroy and re-import it (install_runtime.ps1 -ReplaceExisting) with
-// the rootfs that shipped with this release. Without a distro nothing is replaced; the first-install
+// An upgrade or a new build starts from a fresh WSL distro: when the installed release differs from
+// the one that last set the distro up, destroy and re-import it (install_runtime.ps1 -ReplaceExisting)
+// with the rootfs that shipped with this release. Without a distro nothing is replaced; the first-install
 // path in ensure_runtime_interactive() handles that. Tried at most once per process.
 void refresh_runtime_for_release(const std::filesystem::path& plugin_dir, const std::string& distro)
 {
     static bool attempted = false;
-    const std::string release = current_release_label();
+    const std::string release = current_release_label(plugin_dir);
     if (release.empty() || attempted || read_text_file_trimmed(release_marker_path(plugin_dir)) == release)
         return;
 
