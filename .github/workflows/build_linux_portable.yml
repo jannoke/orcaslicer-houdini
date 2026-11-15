@@ -9,17 +9,41 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CACHE_REV: v1
+  # v2: deps built in the self-hosted Ubuntu containers, not on GitHub-hosted runners.
+  CACHE_REV: v2
 
 jobs:
-  linux_ubuntu22:
-    name: Linux (ubuntu-22.04)
-    runs-on: ubuntu-22.04
+  # On the self-hosted runners, in a container of the Ubuntu release each package is for (its
+  # libraries decide where the .deb installs), like the Fedora RPM job.
+  linux_deb:
+    name: Linux (ubuntu-${{ matrix.ubuntu }})
+    runs-on: [self-hosted, linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04']
+    container:
+      image: ubuntu:${{ matrix.ubuntu }}
     timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
     env:
-      DIST_ID: ubuntu22.04
+      DIST_ID: ubuntu${{ matrix.ubuntu }}
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
+      # The container runs as root without sudo, which build_linux.sh -u calls; sudo keeps
+      # DEBIAN_FRONTEND so apt never stops at a question. git before the checkout, so the deps
+      # cache key can read the deps tree; zstd for actions/cache.
+      - name: Install system tools
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends sudo git ca-certificates curl wget file xz-utils zstd \
+            dpkg-dev fakeroot binutils
+          echo 'Defaults env_keep += "DEBIAN_FRONTEND"' > /etc/sudoers.d/keep-debian-frontend
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -44,18 +68,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
           recipe_hash="$(find build_linux.sh scripts/linux.d -type f -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)"
           echo "DEPS_CACHE_KEY=linux-${DIST_ID}-deps-${deps_tree}-${recipe_hash}-${CACHE_REV}" >> "$GITHUB_ENV"
 
-      - name: Apt-Install Dependencies
-        uses: ./.github/actions/apt-install-deps
+      - name: Install build dependencies
+        run: ./build_linux.sh -ur
 
-      - name: Linux - cache deps
+      # Size parallelism by RAM, not CPUs: PCH'd Orca TUs need ~3 GB each
+      # (CGAL up to ~4.4 GB); deps compile lighter, so allow ~3 GB per job.
+      - name: Linux - size build parallelism
+        run: |
+          set -euo pipefail
+          mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+          size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > $(nproc) )) && j=$(nproc); echo "$j"; }
+          echo "DEPS_JOBS=$(size_jobs 3)" >> "$GITHUB_ENV"
+          echo "BUILD_JOBS=$(size_jobs 4)" >> "$GITHUB_ENV"
+          echo "MemAvailable ${mem_gb} GB, nproc $(nproc): deps -j$(size_jobs 3), build -j$(size_jobs 4)"
+
+      # Restore and save are separate steps so the deps are cached as soon as they are built
+      # (actions/cache only saves when the whole job succeeds). Relative path: in a container
+      # job github.workspace is the host's path, not the container's.
+      - name: Linux - restore deps cache
         id: cache_linux_deps
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
-          path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
+          path: deps/build/OrcaSlicer_dep
           key: ${{ env.DEPS_CACHE_KEY }}
 
       - name: Linux - build deps if missing
@@ -65,7 +104,7 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3; do
             echo "Build Linux deps attempt $attempt"
-            if ./build_linux.sh -drlL; then
+            if ./build_linux.sh -drlL -j "${DEPS_JOBS}"; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -74,6 +113,13 @@ jobs:
             fi
           done
           exit 1
+
+      - name: Linux - save deps cache
+        if: steps.cache_linux_deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: ${{ env.DEPS_CACHE_KEY }}
 
       - name: Linux - build + install
         shell: bash
@@ -96,7 +142,7 @@ jobs:
             -DORCA_TOOLS=ON \
             -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
 
-          cmake --build build --config Release --target install -j"$(nproc)"
+          cmake --build build --config Release --target install -j"${BUILD_JOBS}"
 
           ./scripts/run_gettext.sh
           mkdir -p install-dir/resources/i18n
@@ -127,9 +173,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev fakeroot binutils
-
           rm -rf pkgroot debian
           mkdir -p pkgroot/DEBIAN pkgroot/opt/orcaslicer pkgroot/usr/bin
           cp -a install-dir/. pkgroot/opt/orcaslicer/
@@ -198,202 +241,10 @@ jobs:
           set -euo pipefail
           (cd out && sha256sum * > "SHA256SUMS_${DIST_ID}.txt")
 
-      - name: Upload artifacts (Linux ubuntu22.04)
+      - name: Upload artifacts (Linux ${{ env.DIST_ID }})
         uses: actions/upload-artifact@v7
         with:
           name: orcaslicer-bmcu-linux-${{ env.DIST_ID }}-${{ github.sha }}
           path: out/
           if-no-files-found: error
-
-  linux_ubuntu24:
-    name: Linux (ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    env:
-      DIST_ID: ubuntu24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          lfs: 'false'
-
-      - uses: lukka/get-cmake@latest
-        with:
-          cmakeVersion: "~4.3.0"
-          useLocalCache: true
-          useCloudCache: true
-
-      - name: Compute version
-        shell: bash
-        run: |
-          set -euo pipefail
-          # From version.inc, not the tag: a release tag must equal v<version>-<label>,
-          # and a tag publishes a tested dispatch build, so both name files the same.
-          ver="$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)-$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)"
-          echo "VER=$ver" >> "$GITHUB_ENV"
-
-      - name: Compute deps cache key
-        shell: bash
-        run: |
-          set -euo pipefail
-          deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
-          recipe_hash="$(find build_linux.sh scripts/linux.d -type f -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)"
-          echo "DEPS_CACHE_KEY=linux-${DIST_ID}-deps-${deps_tree}-${recipe_hash}-${CACHE_REV}" >> "$GITHUB_ENV"
-
-      - name: Apt-Install Dependencies
-        uses: ./.github/actions/apt-install-deps
-
-      - name: Linux - cache deps
-        id: cache_linux_deps
-        uses: actions/cache@v5
-        with:
-          path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
-          key: ${{ env.DEPS_CACHE_KEY }}
-
-      - name: Linux - build deps if missing
-        if: steps.cache_linux_deps.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            echo "Build Linux deps attempt $attempt"
-            if ./build_linux.sh -drlL; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Transient dependency download/build failure, retrying after backoff"
-              sleep $((attempt * 20))
-            fi
-          done
-          exit 1
-
-      - name: Linux - build + install
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf build install-dir out
-          mkdir -p out
-
-          # Single-config Ninja: under a multi-config generator 2.5.0 copies the
-
-          # FFmpeg libs to build/src/<config> but installs them from build/src.
-
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${PWD}/deps/build/OrcaSlicer_dep/usr/local" \
-            -DSLIC3R_STATIC=1 \
-            -DSLIC3R_GTK=3 \
-            -DBBL_RELEASE_TO_PUBLIC=1 \
-            -DBBL_INTERNAL_TESTING=0 \
-            -DSLIC3R_PCH=ON \
-            -DORCA_TOOLS=ON \
-            -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
-
-          cmake --build build --config Release --target install -j"$(nproc)"
-
-          ./scripts/run_gettext.sh
-          mkdir -p install-dir/resources/i18n
-          cp -a resources/i18n/. install-dir/resources/i18n/
-
-          app_bin=""
-          for candidate in \
-            "install-dir/bin/OrcaSlicer" \
-            "install-dir/bin/orca-slicer" \
-            "install-dir/OrcaSlicer" \
-            "install-dir/orca-slicer"; do
-            if [ -x "$candidate" ]; then
-              app_bin="${candidate#install-dir/}"
-              break
-            fi
-          done
-
-          if [ -z "$app_bin" ]; then
-            echo "ERROR: installed OrcaSlicer binary not found"
-            find install-dir -maxdepth 3 -type f | sort
-            exit 1
-          fi
-
-          echo "APP_BIN=$app_bin" >> "$GITHUB_ENV"
-          tar -C install-dir -czf "out/OrcaSlicer-BMCU_LinuxDir_${DIST_ID}_amd64_${VER}.tar.gz" .
-
-      - name: Linux - build .deb from install-dir
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev fakeroot binutils
-
-          rm -rf pkgroot debian
-          mkdir -p pkgroot/DEBIAN pkgroot/opt/orcaslicer pkgroot/usr/bin
-          cp -a install-dir/. pkgroot/opt/orcaslicer/
-
-          cat > pkgroot/usr/bin/orca-slicer-bmcu <<EOF
-          #!/bin/sh
-          exec /opt/orcaslicer/${APP_BIN} "$@"
-          EOF
-          chmod 0755 pkgroot/usr/bin/orca-slicer-bmcu
-
-          deb_ver="${VER}~${DIST_ID}"
-
-          mkdir -p debian
-          cat > debian/control <<'EOF'
-          Source: orcaslicer-bmcu
-          Section: utils
-          Priority: optional
-          Maintainer: PJARCZAK CI <ci@invalid>
-          Standards-Version: 4.6.2
-
-          Package: orcaslicer-bmcu
-          Architecture: amd64
-          Description: dummy control for dpkg-shlibdeps
-          EOF
-
-          depends=""
-          if [ -x "pkgroot/opt/orcaslicer/${APP_BIN}" ]; then
-            set +e
-            out="$(dpkg-shlibdeps --ignore-missing-info -O \
-              -lpkgroot/opt/orcaslicer/bin \
-              -lpkgroot/opt/orcaslicer/lib \
-              -lpkgroot/opt/orcaslicer/lib64 \
-              pkgroot/opt/orcaslicer/${APP_BIN} 2>&1)"
-            rc=$?
-            set -e
-
-            if [ $rc -eq 0 ]; then
-              depends="$(printf "%s\n" "$out" | sed -n 's/^shlibs:Depends=//p' | tail -n 1)"
-            else
-              echo "WARN: dpkg-shlibdeps failed:"
-              echo "$out"
-            fi
-          fi
-
-          if [[ -z "$depends" ]]; then
-            depends="libc6, libstdc++6, libgcc-s1"
-          fi
-
-          cat > pkgroot/DEBIAN/control <<EOF
-          Package: orcaslicer-bmcu
-          Version: ${deb_ver}
-          Section: utils
-          Priority: optional
-          Architecture: amd64
-          Maintainer: PJARCZAK CI <ci@invalid>
-          Depends: ${depends}
-          Description: OrcaSlicer BMCU build (installed in /opt/orcaslicer)
-           Wrapper: /usr/bin/orca-slicer-bmcu
-          EOF
-
-          fakeroot dpkg-deb --build pkgroot "out/OrcaSlicer-BMCU_${DIST_ID}_amd64_${VER}.deb"
-
-      - name: Linux - checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          (cd out && sha256sum * > "SHA256SUMS_${DIST_ID}.txt")
-
-      - name: Upload artifacts (Linux ubuntu24.04)
-        uses: actions/upload-artifact@v7
-        with:
-          name: orcaslicer-bmcu-linux-${{ env.DIST_ID }}-${{ github.sha }}
-          path: out/
           if-no-files-found: error
