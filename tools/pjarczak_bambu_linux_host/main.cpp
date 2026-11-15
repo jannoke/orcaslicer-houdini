@@ -150,10 +150,24 @@ int main(int argc, char** argv)
 
         std::thread([&host, &rpc_out, &out_mutex, req_id = req.id, req_method = req.method, req_payload = req.payload, request_binary = std::move(request_binary)]() mutable {
             LinuxPluginHost::set_thread_request_binary(std::move(request_binary));
-            nlohmann::json resp = host.handle(req_method, req_payload);
-
+            // An exception escaping this thread calls std::terminate and kills the host (and with
+            // it every printer connection); answer the one request with an error instead. The
+            // forwarder waits for every reply, so one must always be sent.
+            nlohmann::json resp;
             std::vector<unsigned char> reply_binary;
-            const bool has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
+            bool has_reply_binary = false;
+            try {
+                resp = host.handle(req_method, req_payload);
+                has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
+                if (has_reply_binary != resp.value("__binary_pending", false)) {
+                    resp["__binary_pending"] = has_reply_binary;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "[PJBRIDGE] " << req_method << " threw: " << e.what() << std::endl;
+                resp = {{"ok", false}, {"error", std::string("bridge host exception: ") + e.what()}};
+                reply_binary.clear();
+                has_reply_binary = false;
+            }
 
             std::lock_guard<std::mutex> lock(out_mutex);
             write_json_frame(rpc_out, RpcFrameType::json_response, req_id, resp);
