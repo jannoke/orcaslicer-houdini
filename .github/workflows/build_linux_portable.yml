@@ -35,12 +35,12 @@ jobs:
     steps:
       # The container runs as root without sudo, which build_linux.sh -u calls; sudo keeps
       # DEBIAN_FRONTEND so apt never stops at a question. git before the checkout, so the deps
-      # cache key can read the deps tree; zstd for actions/cache.
+      # cache key can read the deps tree; zstd for actions/cache, unzip for get-cmake.
       - name: Install system tools
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends sudo git ca-certificates curl wget file xz-utils zstd \
+          apt-get install -y --no-install-recommends sudo git ca-certificates curl wget file unzip xz-utils zstd \
             dpkg-dev fakeroot binutils
           echo 'Defaults env_keep += "DEBIAN_FRONTEND"' > /etc/sudoers.d/keep-debian-frontend
 
