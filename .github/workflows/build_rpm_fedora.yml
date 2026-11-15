@@ -9,8 +9,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The source RPM, made once: every Fedora release below is rebuilt from it, and the release
+  # publishes it for other Fedora versions (packaging/fedora/README.md).
+  srpm:
+    name: SRPM
+    runs-on: [self-hosted, linux]
+    container:
+      image: fedora:44
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # git before the checkout, so the checkout is a repository that git archive can pack.
+      - name: Install tools
+        run: dnf install -y git rpm-build
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: 'false'
+
+      - name: Build SRPM
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          packaging/fedora/make_srpm.sh out
+
+      - name: Upload SRPM
+        uses: actions/upload-artifact@v7
+        with:
+          name: orcaslicer-bmcu-srpm-${{ github.sha }}
+          path: out/srpm/*.src.rpm
+          if-no-files-found: error
+
   rpm_fedora:
     name: RPM (fedora-${{ matrix.fedora_version }})
+    needs: srpm
     runs-on: [self-hosted, linux]
     strategy:
       fail-fast: false
@@ -26,30 +62,24 @@ jobs:
       DIST_ID: fedora${{ matrix.fedora_version }}
 
     steps:
+      # The checkout is for the dependency build and its cache key; the RPM is built from the SRPM.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           lfs: 'false'
 
-      - name: Install system tools
+      - name: Download SRPM
+        uses: actions/download-artifact@v8
+        with:
+          name: orcaslicer-bmcu-srpm-${{ github.sha }}
+          path: srpm
+
+      # The SRPM's BuildRequires are what build_linux.sh -u installs, plus the build tools.
+      - name: Install build dependencies
         run: |
           set -euo pipefail
-          dnf install -y \
-            sudo \
-            bash \
-            ca-certificates \
-            cmake \
-            ccache \
-            curl \
-            file \
-            findutils \
-            git \
-            gzip \
-            ninja-build \
-            rpm-build \
-            tar \
-            which \
-            zstd
+          dnf install -y rpm-build 'dnf-command(builddep)' zstd
+          dnf builddep -y srpm/*.src.rpm
 
       - name: Compute version
         run: |
@@ -57,25 +87,17 @@ jobs:
           # From version.inc, not the tag: a release tag must equal v<version>-<label>,
           # and a tag publishes a tested dispatch build, so both name files the same.
           ver="$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)-$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)"
-          rpm_ver="$(printf '%s' "$ver" | tr -c 'A-Za-z0-9._' '_')"
           echo "VER=$ver" >> "$GITHUB_ENV"
-          echo "RPM_VER=$rpm_ver" >> "$GITHUB_ENV"
 
-      - name: Fedora - install Orca build dependencies
-        run: |
-          set -euo pipefail
-          ./build_linux.sh -u
-
-      # Size parallelism by RAM, not CPUs: PCH'd Orca TUs need ~3 GB each
-      # (CGAL up to ~4.4 GB); deps compile lighter, so allow ~3 GB per job.
-      - name: Fedora - size build parallelism
+      # Size parallelism by RAM, not CPUs: deps compile lighter, so allow ~3 GB per job
+      # (the spec sizes the Orca build itself the same way, ~4 GB per job).
+      - name: Fedora - size deps build parallelism
         run: |
           set -euo pipefail
           mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
-          size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > $(nproc) )) && j=$(nproc); echo "$j"; }
-          echo "DEPS_JOBS=$(size_jobs 3)" >> "$GITHUB_ENV"
-          echo "BUILD_JOBS=$(size_jobs 4)" >> "$GITHUB_ENV"
-          echo "MemAvailable ${mem_gb} GB, nproc $(nproc): deps -j$(size_jobs 3), build -j$(size_jobs 4)"
+          j=$(( mem_gb / 3 )); (( j < 1 )) && j=1; (( j > $(nproc) )) && j=$(nproc)
+          echo "DEPS_JOBS=$j" >> "$GITHUB_ENV"
+          echo "MemAvailable ${mem_gb} GB, nproc $(nproc): deps -j$j"
 
       # The deps take most of the job and only change with deps/ or the build
       # recipe. Saved as soon as they are built: actions/cache only saves when
@@ -100,92 +122,15 @@ jobs:
           path: deps/build/OrcaSlicer_dep
           key: ${{ steps.deps_cache.outputs.cache-primary-key }}
 
-      - name: Fedora - build + install
+      # Same source as the checkout, so the deps built from it above stand in for the ones the
+      # spec would build (orca_deps_prefix).
+      - name: Fedora - build RPM from the SRPM
         run: |
           set -euo pipefail
-          rm -rf build install-dir out
+          rm -rf rpm out
           mkdir -p out
-
-          # Single-config Ninja: under a multi-config generator 2.5.0 copies the
-
-          # FFmpeg libs to build/src/<config> but installs them from build/src.
-
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${PWD}/deps/build/OrcaSlicer_dep/usr/local" \
-            -DSLIC3R_STATIC=1 \
-            -DSLIC3R_GTK=3 \
-            -DBBL_RELEASE_TO_PUBLIC=1 \
-            -DBBL_INTERNAL_TESTING=0 \
-            -DSLIC3R_PCH=ON \
-            -DORCA_TOOLS=ON \
-            -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
-
-          cmake --build build --config Release --target install -j"${BUILD_JOBS}"
-
-          ./scripts/run_gettext.sh
-          mkdir -p install-dir/resources/i18n
-          cp -a resources/i18n/. install-dir/resources/i18n/
-
-          app_bin=""
-          for candidate in \
-            "install-dir/bin/OrcaSlicer" \
-            "install-dir/bin/orca-slicer" \
-            "install-dir/OrcaSlicer" \
-            "install-dir/orca-slicer"; do
-            if [ -x "$candidate" ]; then
-              app_bin="${candidate#install-dir/}"
-              break
-            fi
-          done
-
-          if [ -z "$app_bin" ]; then
-            echo "ERROR: installed OrcaSlicer binary not found"
-            find install-dir -maxdepth 3 -type f | sort
-            exit 1
-          fi
-
-          echo "APP_BIN=$app_bin" >> "$GITHUB_ENV"
-
-      - name: Fedora - build RPM
-        run: |
-          set -euo pipefail
-          rm -rf rpm
-          mkdir -p rpm/BUILD rpm/BUILDROOT rpm/RPMS rpm/SOURCES rpm/SPECS rpm/SRPMS
-          cp -a install-dir rpm/SOURCES/orcaslicer-root
-
-          cat > rpm/SPECS/orcaslicer-bmcu.spec <<SPEC
-          %global debug_package %{nil}
-          Name:           orcaslicer-bmcu
-          Version:        ${RPM_VER}
-          Release:        1%{?dist}
-          Summary:        OrcaSlicer BMCU build
-          License:        AGPL-3.0
-          URL:            https://github.com/OrcaSlicer/OrcaSlicer
-          BuildArch:      x86_64
-
-          %description
-          OrcaSlicer BMCU build installed in /opt/orcaslicer.
-
-          %install
-          rm -rf %{buildroot}
-          mkdir -p %{buildroot}/opt/orcaslicer %{buildroot}/usr/bin
-          cp -a %{_topdir}/SOURCES/orcaslicer-root/. %{buildroot}/opt/orcaslicer/
-          cat > %{buildroot}/usr/bin/orca-slicer-bmcu <<'WRAPPER'
-          #!/bin/sh
-          exec /opt/orcaslicer/${APP_BIN} "$@"
-          WRAPPER
-          chmod 0755 %{buildroot}/usr/bin/orca-slicer-bmcu
-
-          %files
-          /opt/orcaslicer
-          /usr/bin/orca-slicer-bmcu
-
-          %changelog
-          * Wed Apr 22 2026 PJARCZAK CI <ci@invalid> - ${RPM_VER}-1
-          - Automated build
-          SPEC
-
-          rpmbuild --define "_topdir ${PWD}/rpm" -bb rpm/SPECS/orcaslicer-bmcu.spec
+          rpmbuild --rebuild --define "_topdir ${PWD}/rpm" \
+            --define "orca_deps_prefix ${PWD}/deps/build/OrcaSlicer_dep" srpm/*.src.rpm
           cp rpm/RPMS/x86_64/*.rpm "out/OrcaSlicer-BMCU_${DIST_ID}_x86_64_${VER}.rpm"
 
       - name: Fedora - checksums

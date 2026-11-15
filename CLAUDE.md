@@ -10,6 +10,7 @@ This repo is janno's fork build. **PJB = original OrcaSlicer + the bridge** that
 - **Bump `FORK_RELEASE_LABEL` in `version.inc` before every release tag.** It feeds the splash/About text and `my_build_all.yml` rejects a tag that is not `v<SoftFever_VERSION>-<label>`.
 - A tag push needs `.github/release-notes/<tag>.md`. Notes are for end users only (what's new, known issues, downloads); no CI/infra items; anything not verified on hardware goes under Known issues; show the draft to the user before publishing.
 - The Windows CI job runs on the self-hosted runner `gh-runnerwin-01`; Linux jobs on `gh-runner-01..05`. If the Windows runner service is stopped, start it (`Start-Service actions.runner.*`) before tagging. `gh api` works in the sandbox as `GH_TOKEN=dummy gh ...` (the proxy injects the real token); plain `git push` uses proxy-injected HTTPS credentials. SSH remotes do not work from the sandbox.
+- Fedora RPMs are rebuilt from a source RPM (`packaging/fedora/`: spec `orcaslicer-bmcu.spec.in`, `make_srpm.sh`; BuildRequires come from `scripts/linux.d/fedora`), and the release publishes the SRPM too. CI passes its cached deps in with `orca_deps_prefix`. `packaging/fedora/build_rpms.sh 43 44` builds them locally in Fedora containers (~2 h per release on 32 cores).
 - Check CI results by job: the build scripts used to package stale binaries after compile errors, so verify `error C`/`error LNK` counts and DLL timestamps before trusting a package.
 
 ## How the Windows bridge works
