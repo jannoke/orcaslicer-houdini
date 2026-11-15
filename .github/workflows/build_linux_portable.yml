@@ -18,7 +18,6 @@ jobs:
     timeout-minutes: 360
     env:
       DIST_ID: ubuntu22.04
-      EVENT_TAG: ${{ github.event.release.tag_name }}
 
     steps:
       - name: Checkout
@@ -36,12 +35,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${EVENT_TAG:-${GITHUB_REF_NAME:-}}"
-          if [[ "$tag" == v* ]]; then
-            ver="${tag#v}"
-          else
-            ver="git${GITHUB_SHA::7}"
-          fi
+          # From version.inc, not the tag: a release tag must equal v<version>-<label>,
+          # and a tag publishes a tested dispatch build, so both name files the same.
+          ver="$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)-$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)"
           echo "VER=$ver" >> "$GITHUB_ENV"
 
       - name: Compute deps cache key
@@ -144,11 +140,7 @@ jobs:
           EOF
           chmod 0755 pkgroot/usr/bin/orca-slicer-bmcu
 
-          if [[ "${EVENT_TAG:-${GITHUB_REF_NAME:-}}" == v* ]]; then
-            deb_ver="${VER}~${DIST_ID}"
-          else
-            deb_ver="0.0~${VER}~${DIST_ID}"
-          fi
+          deb_ver="${VER}~${DIST_ID}"
 
           mkdir -p debian
           cat > debian/control <<'EOF'
@@ -219,7 +211,6 @@ jobs:
     timeout-minutes: 360
     env:
       DIST_ID: ubuntu24.04
-      EVENT_TAG: ${{ github.event.release.tag_name }}
 
     steps:
       - name: Checkout
@@ -237,12 +228,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${EVENT_TAG:-${GITHUB_REF_NAME:-}}"
-          if [[ "$tag" == v* ]]; then
-            ver="${tag#v}"
-          else
-            ver="git${GITHUB_SHA::7}"
-          fi
+          # From version.inc, not the tag: a release tag must equal v<version>-<label>,
+          # and a tag publishes a tested dispatch build, so both name files the same.
+          ver="$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)-$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)"
           echo "VER=$ver" >> "$GITHUB_ENV"
 
       - name: Compute deps cache key
@@ -345,11 +333,7 @@ jobs:
           EOF
           chmod 0755 pkgroot/usr/bin/orca-slicer-bmcu
 
-          if [[ "${EVENT_TAG:-${GITHUB_REF_NAME:-}}" == v* ]]; then
-            deb_ver="${VER}~${DIST_ID}"
-          else
-            deb_ver="0.0~${VER}~${DIST_ID}"
-          fi
+          deb_ver="${VER}~${DIST_ID}"
 
           mkdir -p debian
           cat > debian/control <<'EOF'

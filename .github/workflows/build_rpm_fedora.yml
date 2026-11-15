@@ -24,7 +24,6 @@ jobs:
         shell: bash
     env:
       DIST_ID: fedora${{ matrix.fedora_version }}
-      EVENT_TAG: ${{ github.event.release.tag_name }}
 
     steps:
       - name: Checkout
@@ -49,17 +48,15 @@ jobs:
             ninja-build \
             rpm-build \
             tar \
-            which
+            which \
+            zstd
 
       - name: Compute version
         run: |
           set -euo pipefail
-          tag="${EVENT_TAG:-${GITHUB_REF_NAME:-}}"
-          if [[ "$tag" == v* ]]; then
-            ver="${tag#v}"
-          else
-            ver="git${GITHUB_SHA::7}"
-          fi
+          # From version.inc, not the tag: a release tag must equal v<version>-<label>,
+          # and a tag publishes a tested dispatch build, so both name files the same.
+          ver="$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)-$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)"
           rpm_ver="$(printf '%s' "$ver" | tr -c 'A-Za-z0-9._' '_')"
           echo "VER=$ver" >> "$GITHUB_ENV"
           echo "RPM_VER=$rpm_ver" >> "$GITHUB_ENV"
@@ -80,10 +77,28 @@ jobs:
           echo "BUILD_JOBS=$(size_jobs 4)" >> "$GITHUB_ENV"
           echo "MemAvailable ${mem_gb} GB, nproc $(nproc): deps -j$(size_jobs 3), build -j$(size_jobs 4)"
 
+      # The deps take most of the job and only change with deps/ or the build
+      # recipe. Saved as soon as they are built: actions/cache only saves when
+      # the whole job succeeds. (No .git in the container checkout, so hashFiles.)
+      - name: Fedora - restore deps cache
+        id: deps_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: fedora${{ matrix.fedora_version }}-deps-${{ hashFiles('deps/**', 'build_linux.sh', 'scripts/linux.d/**') }}-v1
+
       - name: Fedora - build Orca dependencies
+        if: steps.deps_cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           ./build_linux.sh -drlL -j "${DEPS_JOBS}"
+
+      - name: Fedora - save deps cache
+        if: steps.deps_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: ${{ steps.deps_cache.outputs.cache-primary-key }}
 
       - name: Fedora - build + install
         run: |
