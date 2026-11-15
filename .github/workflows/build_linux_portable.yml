@@ -247,4 +247,3 @@ jobs:
           name: orcaslicer-bmcu-linux-${{ env.DIST_ID }}-${{ github.sha }}
           path: out/
           if-no-files-found: error
-          if-no-files-found: error
