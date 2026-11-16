@@ -1,0 +1,87 @@
+# OrcaSlicer PJB (OrcaSlicer + Pawel Jarczak's Bambu network-plugin bridge), built from source.
+# make_srpm.sh fills in the @...@ values and packs the source tarball; see README.md here.
+#
+# %%build downloads the sources of the dependencies Orca bundles (deps/), so it needs network
+# access: `mock --enable-network`, or "Enable internet access during builds" on COPR.
+# --define "orca_dl_cache <dir>" keeps those downloads in <dir> between builds.
+# --define "orca_deps_prefix <dir>" uses dependencies already built from this source with
+# build_linux.sh -drlL (<dir> = deps/build/OrcaSlicer_dep) instead of building them (CI caches them).
+
+%global debug_package %{nil}
+%global _buildshell /bin/bash
+# Same compiler flags as the release builds. Fedora's defaults (LTO, -z defs, hardening specs)
+# have not been tried with Orca's static dependencies.
+%undefine _auto_set_build_flags
+%global _lto_cflags %{nil}
+# The Python runtime bundled in /opt/orcaslicer/lib/python is private to Orca: don't offer its
+# libpython to other packages, and don't require a system one.
+%global __provides_exclude_from ^/opt/orcaslicer/lib/python/.*$
+%global __requires_exclude ^libpython3\\.[0-9]+\\.so.*$
+# The built dependencies: orca_deps_prefix, or what %%build builds (relative to the source dir).
+%global deps_dir %{?orca_deps_prefix}%{!?orca_deps_prefix:deps/build/OrcaSlicer_dep}
+
+Name:           orcaslicer-bmcu
+Version:        @RPM_VERSION@
+Release:        1%{?dist}
+Summary:        OrcaSlicer with the Bambu network-plugin bridge (PJB)
+License:        AGPL-3.0-only
+URL:            https://github.com/jannoke/orcaslicer-houdini
+Source0:        %{name}-%{version}.tar.gz
+ExclusiveArch:  x86_64
+
+@BUILD_REQUIRES@
+
+%description
+OrcaSlicer @VERSION@ with Pawel Jarczak's Bambu network-plugin bridge, so Bambu cloud
+printers keep working. Installed in /opt/orcaslicer; start it with orca-slicer-bmcu.
+
+%prep
+%autosetup -n %{name}-%{version}
+
+%build
+# rpmbuild exports PKG_CONFIG_PATH with the system pkgconfig folders, which pkg-config then
+# searches before the bundled dependencies: the dependencies' FindOpenSSL reads the system
+# openssl.pc (Libs.private: -lz) instead of the bundled OpenSSL's and fails on a missing static zlib.
+unset PKG_CONFIG_PATH
+# Size parallelism by RAM, not CPUs, like the CI job: PCH'd Orca files need ~3-4 GB each.
+mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > %{_smp_build_ncpus} )) && j=%{_smp_build_ncpus}; echo "$j"; }
+
+%if 0%{!?orca_deps_prefix:1}
+./build_linux.sh -drlL -j "$(size_jobs 3)" %{?orca_dl_cache:-- -DDEP_DOWNLOAD_DIR=%{orca_dl_cache}}
+%endif
+deps_prefix="$(realpath "%{deps_dir}")"
+
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="${deps_prefix}/usr/local" \
+  -DSLIC3R_STATIC=1 \
+  -DSLIC3R_GTK=3 \
+  -DBBL_RELEASE_TO_PUBLIC=1 \
+  -DBBL_INTERNAL_TESTING=0 \
+  -DSLIC3R_PCH=ON \
+  -DORCA_TOOLS=ON \
+  -DCMAKE_INSTALL_PREFIX="${PWD}/install-dir"
+cmake --build build -j"$(size_jobs 4)"
+./scripts/run_gettext.sh
+
+%install
+cmake --install build
+test -x install-dir/bin/orca-slicer
+packaging/linux/bundle_python.sh "%{deps_dir}/usr/local/libpython" install-dir
+mkdir -p install-dir/resources/i18n
+cp -a resources/i18n/. install-dir/resources/i18n/
+mkdir -p %{buildroot}/opt/orcaslicer %{buildroot}%{_bindir}
+cp -a install-dir/. %{buildroot}/opt/orcaslicer/
+cat > %{buildroot}%{_bindir}/orca-slicer-bmcu <<'EOF'
+#!/bin/sh
+exec /opt/orcaslicer/bin/orca-slicer "$@"
+EOF
+chmod 0755 %{buildroot}%{_bindir}/orca-slicer-bmcu
+
+%files
+/opt/orcaslicer
+%{_bindir}/orca-slicer-bmcu
+
+%changelog
+* @CHANGELOG_DATE@ PJB builds <ci@invalid> - %{version}-1
+- Built from the PJB source, @VERSION@

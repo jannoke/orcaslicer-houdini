@@ -9,18 +9,35 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CACHE_REV: v1
+  # v2: deps built in the self-hosted Ubuntu container, not on GitHub-hosted runners.
+  CACHE_REV: v2
 
 jobs:
   linux_appimage_ubuntu24:
     name: Linux AppImage (ubuntu-24.04)
-    runs-on: ubuntu-24.04
+    # On the self-hosted runners in an Ubuntu container, like the .deb jobs (build_linux_portable.yml).
+    runs-on: [self-hosted, linux]
+    container:
+      image: ubuntu:24.04
     timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
     env:
       DIST_ID: ubuntu24.04
-      EVENT_TAG: ${{ github.event.release.tag_name }}
+      DEBIAN_FRONTEND: noninteractive
 
     steps:
+      # The container runs as root without sudo, which build_linux.sh -u calls; sudo keeps
+      # DEBIAN_FRONTEND so apt never stops at a question. git before the checkout, so the deps
+      # cache key can read the deps tree; zstd for actions/cache, unzip for get-cmake.
+      - name: Install system tools
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends sudo git ca-certificates curl wget file unzip xz-utils zstd binutils
+          echo 'Defaults env_keep += "DEBIAN_FRONTEND"' > /etc/sudoers.d/keep-debian-frontend
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -36,30 +53,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${EVENT_TAG:-${GITHUB_REF_NAME:-}}"
-          if [[ "$tag" == v* ]]; then
-            ver="${tag#v}"
-          else
-            ver="git${GITHUB_SHA::7}"
-          fi
+          # From version.inc, not the tag: a release tag must equal v<version>-<label>,
+          # and a tag publishes a tested dispatch build, so both name files the same.
+          ver="$(sed -n 's/^set(SoftFever_VERSION "\(.*\)")/\1/p' version.inc)-$(sed -n 's/^set(FORK_RELEASE_LABEL "\(.*\)")/\1/p' version.inc)"
           echo "VER=$ver" >> "$GITHUB_ENV"
 
       - name: Compute deps cache key
         shell: bash
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           deps_tree="$(git rev-parse HEAD:deps 2>/dev/null || echo no-deps)"
           recipe_hash="$(find build_linux.sh scripts/linux.d -type f -print0 | sort -z | xargs -0 cat | sha256sum | cut -c1-12)"
           echo "DEPS_CACHE_KEY=linux-${DIST_ID}-deps-${deps_tree}-${recipe_hash}-${CACHE_REV}" >> "$GITHUB_ENV"
 
-      - name: Apt-Install Dependencies
-        uses: ./.github/actions/apt-install-deps
+      - name: Install build dependencies
+        run: ./build_linux.sh -ur
 
-      - name: Linux - cache deps
+      # Size parallelism by RAM, not CPUs: PCH'd Orca TUs need ~3 GB each
+      # (CGAL up to ~4.4 GB); deps compile lighter, so allow ~3 GB per job.
+      - name: Linux - size build parallelism
+        run: |
+          set -euo pipefail
+          mem_gb=$(awk '/MemAvailable/ {print int($2/1048576)}' /proc/meminfo)
+          size_jobs() { local j=$(( mem_gb / $1 )); (( j < 1 )) && j=1; (( j > $(nproc) )) && j=$(nproc); echo "$j"; }
+          echo "DEPS_JOBS=$(size_jobs 3)" >> "$GITHUB_ENV"
+          echo "BUILD_JOBS=$(size_jobs 4)" >> "$GITHUB_ENV"
+          echo "MemAvailable ${mem_gb} GB, nproc $(nproc): deps -j$(size_jobs 3), build -j$(size_jobs 4)"
+
+      # Restore and save are separate steps so the deps are cached as soon as they are built
+      # (actions/cache only saves when the whole job succeeds). Relative path: in a container
+      # job github.workspace is the host's path, not the container's.
+      - name: Linux - restore deps cache
         id: cache_linux_deps
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
-          path: ${{ github.workspace }}/deps/build/OrcaSlicer_dep
+          path: deps/build/OrcaSlicer_dep
           key: ${{ env.DEPS_CACHE_KEY }}
 
       - name: Linux - build deps if missing
@@ -69,7 +98,7 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3; do
             echo "Build Linux deps attempt $attempt"
-            if ./build_linux.sh -drlL; then
+            if ./build_linux.sh -drlL -j "${DEPS_JOBS}"; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -79,6 +108,13 @@ jobs:
           done
           exit 1
 
+      - name: Linux - save deps cache
+        if: steps.cache_linux_deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: ${{ env.DEPS_CACHE_KEY }}
+
       - name: Linux - build AppImage
         shell: bash
         run: |
@@ -86,7 +122,7 @@ jobs:
           rm -rf build build-dbg build-dbginfo out
           mkdir -p out
 
-          ./build_linux.sh -istrlL
+          ./build_linux.sh -istrlL -j "${BUILD_JOBS}"
           ./scripts/check_appimage_libs.sh ./build/package ./build/package/bin/orca-slicer
 
           mapfile -t appimages < <(find build -maxdepth 3 -type f -name '*.AppImage' ! -name 'appimagetool.AppImage' | LC_ALL=C sort)

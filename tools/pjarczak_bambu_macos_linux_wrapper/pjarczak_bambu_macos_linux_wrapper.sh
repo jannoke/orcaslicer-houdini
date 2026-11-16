@@ -5,6 +5,11 @@ HOST_PATH="${1:-}"
 RUNTIME_DIR="${2:-}"
 PLUGIN_DIR="${3:-}"
 
+# Single-quote a value for the shell that runs inside the Lima VM.
+shell_quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 if [ -n "${PJARCZAK_MAC_LINUX_WRAPPER_CMD:-}" ]; then
     exec /bin/sh -lc "$PJARCZAK_MAC_LINUX_WRAPPER_CMD"
 fi
@@ -23,7 +28,7 @@ fi
 
 if [ -n "${PJARCZAK_MAC_LIMA_INSTANCE:-}" ]; then
     exec limactl shell "$PJARCZAK_MAC_LIMA_INSTANCE" -- /bin/sh -lc \
-        "export PJARCZAK_BAMBU_PLUGIN_DIR=$(printf %s \"$PLUGIN_DIR\"); export PJARCZAK_BAMBU_NETWORK_SO=$(printf %s \"$PLUGIN_DIR/libbambu_networking.so\"); export PJARCZAK_BAMBU_SOURCE_SO=$(printf %s \"$PLUGIN_DIR/libBambuSource.so\"); export PJARCZAK_BAMBU_LIVE555_SO=$(printf %s \"$PLUGIN_DIR/liblive555.so\"); exec $(printf %s \"$HOST_PATH\")"
+        "export PJARCZAK_BAMBU_PLUGIN_DIR=$(shell_quote "$PLUGIN_DIR"); export PJARCZAK_BAMBU_NETWORK_SO=$(shell_quote "$PLUGIN_DIR/libbambu_networking.so"); export PJARCZAK_BAMBU_SOURCE_SO=$(shell_quote "$PLUGIN_DIR/libBambuSource.so"); export PJARCZAK_BAMBU_LIVE555_SO=$(shell_quote "$PLUGIN_DIR/liblive555.so"); exec $(shell_quote "$HOST_PATH")"
 fi
 
 echo "No macOS Linux wrapper configured. Set PJARCZAK_MAC_LINUX_WRAPPER_CMD, PJARCZAK_MAC_DOCKER_IMAGE or PJARCZAK_MAC_LIMA_INSTANCE." >&2

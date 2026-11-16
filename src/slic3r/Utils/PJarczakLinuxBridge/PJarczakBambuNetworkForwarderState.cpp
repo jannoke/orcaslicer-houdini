@@ -18,10 +18,27 @@ void run_or_queue(BridgeAgent* agent, std::function<void()> fn)
 {
     if (!agent)
         return;
-    if (agent->queue_on_main)
-        agent->queue_on_main(std::move(fn));
+    if (auto queue = get_callback(agent, &BridgeAgent::queue_on_main))
+        queue(std::move(fn));
     else
         fn();
+}
+
+// Calls one of Orca's agent callbacks for an event from the host, on Orca's main thread when it
+// gave us queue_on_main. The callback is looked up when the call runs, not when the event
+// arrives: on exit Orca clears its callbacks and then runs the calls already queued (GUI_App's
+// "draining callbacks"), so by then a callback can be empty (std::bad_function_call, which Orca
+// reports as an unhandled exception on closing) or the agent deleted.
+template <class Fn, class... Args>
+void deliver(BridgeAgent* agent, Fn BridgeAgent::*member, Args... args)
+{
+    run_or_queue(agent, [remote_handle = agent->remote_handle, member, args...] {
+        BridgeAgent* current = find_remote_agent(remote_handle);
+        if (!current)
+            return;
+        if (Fn fn = get_callback(current, member))
+            fn(args...);
+    });
 }
 
 #if defined(_WIN32)
@@ -119,51 +136,44 @@ void dispatch_agent_event(std::int64_t remote_handle, const std::string& name, c
         return;
 
     if (name == "on_ssdp_msg") {
-        if (agent->on_ssdp_msg) {
-            const auto msg = payload.value("dev_info_json_str", std::string());
-            run_or_queue(agent, [agent, msg] { agent->on_ssdp_msg(msg); });
-        }
+        const auto msg = payload.value("dev_info_json_str", std::string());
+        deliver(agent, &BridgeAgent::on_ssdp_msg, msg);
         return;
     }
     if (name == "on_user_login") {
         const int online_login = payload.value("online_login", 0);
         const bool login = payload.value("login", false);
         agent->logged_in = login;
-        if (agent->on_user_login)
-            run_or_queue(agent, [agent, online_login, login] { agent->on_user_login(online_login, login); });
+        deliver(agent, &BridgeAgent::on_user_login, online_login, login);
         return;
     }
     if (name == "on_printer_connected") {
         const auto topic = payload.value("topic_str", std::string());
-        if (agent->on_printer_connected)
-            run_or_queue(agent, [agent, topic] { agent->on_printer_connected(topic); });
+        deliver(agent, &BridgeAgent::on_printer_connected, topic);
         return;
     }
     if (name == "on_server_connected") {
         const int return_code = payload.value("return_code", 0);
         const int reason_code = payload.value("reason_code", 0);
         agent->server_connected = return_code == 0;
-        if (agent->on_server_connected)
-            run_or_queue(agent, [agent, return_code, reason_code] { agent->on_server_connected(return_code, reason_code); });
+        deliver(agent, &BridgeAgent::on_server_connected, return_code, reason_code);
         return;
     }
     if (name == "on_http_error") {
         const unsigned http_code = payload.value("http_code", 0u);
         const auto body = payload.value("http_body", std::string());
-        if (agent->on_http_error)
-            run_or_queue(agent, [agent, http_code, body] { agent->on_http_error(http_code, body); });
+        deliver(agent, &BridgeAgent::on_http_error, http_code, body);
         return;
     }
     if (name == "on_subscribe_failure") {
         const auto topic = payload.value("topic", std::string());
-        if (agent->on_subscribe_failure)
-            run_or_queue(agent, [agent, topic] { agent->on_subscribe_failure(topic); });
+        deliver(agent, &BridgeAgent::on_subscribe_failure, topic);
         return;
     }
     if (name == "callback.get_country_code") {
         std::string value;
-        if (agent->get_country_code)
-            value = agent->get_country_code();
+        if (auto get_country_code = get_callback(agent, &BridgeAgent::get_country_code))
+            value = get_country_code();
         else
             value = agent->country_code;
         RpcClient::instance().invoke_void("bridge.callback_reply", {{"request_id", payload.value("request_id", 0LL)}, {"value", value}});
@@ -172,37 +182,32 @@ void dispatch_agent_event(std::int64_t remote_handle, const std::string& name, c
     if (name == "on_message") {
         const auto dev_id = payload.value("dev_id", std::string());
         const auto msg = payload.value("msg", std::string());
-        if (agent->on_message)
-            run_or_queue(agent, [agent, dev_id, msg] { agent->on_message(dev_id, msg); });
+        deliver(agent, &BridgeAgent::on_message, dev_id, msg);
         return;
     }
     if (name == "on_user_message") {
         const auto dev_id = payload.value("dev_id", std::string());
         const auto msg = payload.value("msg", std::string());
-        if (agent->on_user_message)
-            run_or_queue(agent, [agent, dev_id, msg] { agent->on_user_message(dev_id, msg); });
+        deliver(agent, &BridgeAgent::on_user_message, dev_id, msg);
         return;
     }
     if (name == "on_local_connect") {
         const int status = payload.value("status", 0);
         const auto dev_id = payload.value("dev_id", std::string());
         const auto msg = payload.value("msg", std::string());
-        if (agent->on_local_connect)
-            run_or_queue(agent, [agent, status, dev_id, msg] { agent->on_local_connect(status, dev_id, msg); });
+        deliver(agent, &BridgeAgent::on_local_connect, status, dev_id, msg);
         return;
     }
     if (name == "on_local_message") {
         const auto dev_id = payload.value("dev_id", std::string());
         const auto msg = payload.value("msg", std::string());
-        if (agent->on_local_message)
-            run_or_queue(agent, [agent, dev_id, msg] { agent->on_local_message(dev_id, msg); });
+        deliver(agent, &BridgeAgent::on_local_message, dev_id, msg);
         return;
     }
     if (name == "on_server_error") {
         const auto url = payload.value("url", std::string());
         const int status = payload.value("status", 0);
-        if (agent->on_server_error)
-            run_or_queue(agent, [agent, url, status] { agent->on_server_error(url, status); });
+        deliver(agent, &BridgeAgent::on_server_error, url, status);
         return;
     }
     if (name == "job.update_status") {

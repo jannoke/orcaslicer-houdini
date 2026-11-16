@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -54,6 +55,9 @@ struct BridgeAgent {
     bool tracking_enabled{false};
     bool multi_machine_enabled{false};
 
+    // Orca sets the callbacks below on its main thread while the event pump thread reads them:
+    // use set_callback() / get_callback().
+    std::mutex callbacks_mutex;
     BBL::OnMsgArrivedFn on_ssdp_msg;
     BBL::OnUserLoginFn on_user_login;
     BBL::OnPrinterConnectedFn on_printer_connected;
@@ -98,6 +102,20 @@ struct BridgeTunnel {
     std::wstring logger_message_wide;
 #endif
 };
+
+template <class Fn, class Value>
+void set_callback(BridgeAgent* agent, Fn BridgeAgent::*member, Value&& fn)
+{
+    std::lock_guard<std::mutex> lock(agent->callbacks_mutex);
+    agent->*member = std::forward<Value>(fn);
+}
+
+template <class Fn>
+Fn get_callback(BridgeAgent* agent, Fn BridgeAgent::*member)
+{
+    std::lock_guard<std::mutex> lock(agent->callbacks_mutex);
+    return agent->*member;
+}
 
 BridgeAgent* as_agent(void* handle);
 void* new_agent(const std::string& log_dir);

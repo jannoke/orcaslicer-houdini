@@ -89,7 +89,9 @@ bool read_raw_frame(std::istream& in, RawRpcFrame& frame, std::string& error)
 
 bool write_json_frame(std::ostream& out, RpcFrameType type, int id, const nlohmann::json& payload)
 {
-    const auto dumped = payload.dump();
+    // Plug-in strings are not guaranteed to be UTF-8; a strict dump() throws, and an
+    // exception here used to abort the whole bridge host.
+    const auto dumped = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     return write_raw_frame(out, type, id, dumped.data(), dumped.size());
 }
 

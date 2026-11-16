@@ -50,6 +50,7 @@ bool validate_linux_payload_file_against_manifest(const std::string& file_path, 
 bool validate_linux_payload_set_against_manifest(const std::filesystem::path& plugin_folder, std::string* reason = nullptr);
 bool validate_linux_payload_set_against_manifest(const boost::filesystem::path& plugin_folder, std::string* reason = nullptr);
 bool abi_version_matches_expected(const std::string& actual_version, std::string* reason = nullptr);
+bool is_bridge_supported_network_version(const std::string& version);
 std::vector<std::string> ota_copy_extensions();
 
 }

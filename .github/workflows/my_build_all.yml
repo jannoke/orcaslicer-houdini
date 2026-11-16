@@ -50,23 +50,72 @@ jobs:
             exit 1
           fi
 
-  build_windows:
+  # Release the files that were tested: a tag publishes the artifacts of a
+  # successful dispatch run of this workflow whose source equals the tagged
+  # commit apart from .github/release-notes (notes are usually committed after
+  # testing, and merging the PR makes a new commit with the same tree). Without
+  # such a run (or once its artifacts expired) everything is built as before.
+  find_tested_build:
+    name: Find tested build
     needs: check_release_notes
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_id: ${{ steps.find.outputs.run_id }}
+    steps:
+      - name: Checkout
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Look for a tested dispatch run of the same source
+        id: find
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=""
+          while read -r id sha; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            git diff --quiet "$sha" "$GITHUB_SHA" -- . ':(exclude).github/release-notes' || continue
+            live=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" -q '[.artifacts[] | select(.expired | not)] | length')
+            [[ "$live" -gt 0 ]] || continue
+            run_id="$id"
+            break
+          done < <(gh run list -R "$GITHUB_REPOSITORY" --workflow my_build_all.yml --event workflow_dispatch \
+                     --status success --limit 50 --json databaseId,headSha -q '.[] | "\(.databaseId) \(.headSha)"')
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          if [[ -n "$run_id" ]]; then
+            echo "Publishing the tested build from $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No tested dispatch run matches $GITHUB_SHA; building everything" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build_windows:
+    needs: find_tested_build
+    if: ${{ needs.find_tested_build.outputs.run_id == '' }}
     uses: ./.github/workflows/build_windows_bridge.yml
     secrets: inherit
 
   build_linux_portable:
-    needs: check_release_notes
+    needs: find_tested_build
+    if: ${{ needs.find_tested_build.outputs.run_id == '' }}
     uses: ./.github/workflows/build_linux_portable.yml
     secrets: inherit
 
   build_linux_appimage:
-    needs: check_release_notes
+    needs: find_tested_build
+    if: ${{ needs.find_tested_build.outputs.run_id == '' }}
     uses: ./.github/workflows/build_linux_appimage.yml
     secrets: inherit
 
   build_rpm_fedora:
-    needs: check_release_notes
+    needs: find_tested_build
+    if: ${{ needs.find_tested_build.outputs.run_id == '' }}
     uses: ./.github/workflows/build_rpm_fedora.yml
     secrets: inherit
 
@@ -80,14 +129,22 @@ jobs:
   publish_release:
     name: Publish release assets
     needs:
+      - find_tested_build
       - build_windows
       - build_linux_portable
       - build_linux_appimage
       - build_rpm_fedora
-    if: ${{ github.event_name == 'push' }}
+    # The builds are skipped when a tested run is published, so check results
+    # explicitly instead of relying on the default success() condition.
+    if: >-
+      !cancelled() && github.event_name == 'push' && needs.find_tested_build.result == 'success' &&
+      (needs.find_tested_build.outputs.run_id != '' ||
+       (needs.build_windows.result == 'success' && needs.build_linux_portable.result == 'success' &&
+        needs.build_linux_appimage.result == 'success' && needs.build_rpm_fedora.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
 
     steps:
       - name: Checkout release notes
@@ -95,7 +152,16 @@ jobs:
         with:
           sparse-checkout: .github/release-notes
 
+      - name: Download the tested build's artifacts
+        if: ${{ needs.find_tested_build.outputs.run_id != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+          run-id: ${{ needs.find_tested_build.outputs.run_id }}
+          github-token: ${{ github.token }}
+
       - name: Download all artifacts
+        if: ${{ needs.find_tested_build.outputs.run_id == '' }}
         uses: actions/download-artifact@v8
         with:
           path: release-artifacts

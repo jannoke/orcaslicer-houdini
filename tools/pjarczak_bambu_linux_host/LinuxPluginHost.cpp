@@ -8,6 +8,7 @@
 #include "../../src/slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 #include <dlfcn.h>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
@@ -27,14 +28,20 @@ namespace {
 
 std::atomic<Slic3r::PJarczakLinuxBridge::LinuxPluginHost*> g_active_host{nullptr};
 
+// Stands in for Orca's refresh_agora_url() (see rewrite_refresh_url()). libBambuSource
+// calls it from an Agora event handler while holding that handler's mutex, and Orca's
+// version answers later from the plug-in's thread, so answer from a thread here too.
 extern "C" void host_refresh_agora_url(char const* device, char const* dev_ver, char const* channel, void* context, void (*callback)(void* context, char const* url))
 {
-    auto* host = g_active_host.load();
-    std::string url;
-    if (host)
-        url = host->refresh_camera_url_for_ft(device ? device : "", dev_ver ? dev_ver : "", channel ? channel : "");
-    if (callback)
-        callback(context, url.c_str());
+    std::thread([device = std::string(device ? device : ""), dev_ver = std::string(dev_ver ? dev_ver : ""),
+                 channel = std::string(channel ? channel : ""), context, callback] {
+        auto* host = g_active_host.load();
+        std::string url;
+        if (host)
+            url = host->refresh_camera_url_for_ft(device, dev_ver, channel);
+        if (callback)
+            callback(context, url.c_str());
+    }).detach();
 }
 
 extern "C" {
@@ -104,7 +111,7 @@ void host_log_json(const std::string& kind, const nlohmann::json& payload)
         line["kind"] = kind;
         line["payload"] = payload;
         std::lock_guard<std::mutex> lock(g_host_log_mutex);
-        std::cerr << "[PJBRIDGE] " << trim_for_log(line.dump()) << std::endl;
+        std::cerr << "[PJBRIDGE] " << trim_for_log(line.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)) << std::endl;
     } catch (...) {
     }
 }
@@ -256,49 +263,7 @@ BBL::TaskQueryParams task_query_from_json(const nlohmann::json& j)
 
 BBL::PrintParams print_params_from_json(const nlohmann::json& j)
 {
-    BBL::PrintParams p{};
-    p.dev_id = j.value("dev_id", std::string());
-    p.task_name = j.value("task_name", std::string());
-    p.project_name = j.value("project_name", std::string());
-    p.preset_name = j.value("preset_name", std::string());
-    p.filename = j.value("filename", std::string());
-    p.config_filename = j.value("config_filename", std::string());
-    p.plate_index = j.value("plate_index", 0);
-    p.ftp_folder = j.value("ftp_folder", std::string());
-    p.ftp_file = j.value("ftp_file", std::string());
-    p.ftp_file_md5 = j.value("ftp_file_md5", std::string());
-    p.nozzle_mapping = j.value("nozzle_mapping", std::string());
-    p.ams_mapping = j.value("ams_mapping", std::string());
-    p.ams_mapping2 = j.value("ams_mapping2", std::string());
-    p.ams_mapping_info = j.value("ams_mapping_info", std::string());
-    p.nozzles_info = j.value("nozzles_info", std::string());
-    p.connection_type = j.value("connection_type", std::string());
-    p.comments = j.value("comments", std::string());
-    p.origin_profile_id = j.value("origin_profile_id", 0);
-    p.stl_design_id = j.value("stl_design_id", 0);
-    p.origin_model_id = j.value("origin_model_id", std::string());
-    p.print_type = j.value("print_type", std::string());
-    p.dst_file = j.value("dst_file", std::string());
-    p.dev_name = j.value("dev_name", std::string());
-    p.dev_ip = j.value("dev_ip", std::string());
-    p.use_ssl_for_ftp = j.value("use_ssl_for_ftp", false);
-    p.use_ssl_for_mqtt = j.value("use_ssl_for_mqtt", false);
-    p.username = j.value("username", std::string());
-    p.password = j.value("password", std::string());
-    p.task_bed_leveling = j.value("task_bed_leveling", false);
-    p.task_flow_cali = j.value("task_flow_cali", false);
-    p.task_vibration_cali = j.value("task_vibration_cali", false);
-    p.task_layer_inspect = j.value("task_layer_inspect", false);
-    p.task_record_timelapse = j.value("task_record_timelapse", false);
-    p.task_use_ams = j.value("task_use_ams", false);
-    p.task_bed_type = j.value("task_bed_type", std::string());
-    p.extra_options = j.value("extra_options", std::string());
-    p.auto_bed_leveling = j.value("auto_bed_leveling", 0);
-    p.auto_flow_cali = j.value("auto_flow_cali", 0);
-    p.auto_offset_cali = j.value("auto_offset_cali", 0);
-    p.extruder_cali_manual_mode = j.value("extruder_cali_manual_mode", -1);
-    p.task_ext_change_assist = j.value("task_ext_change_assist", false);
-    p.try_emmc_print = j.value("try_emmc_print", false);
+    BBL::PrintParams p = JsonBridge::print_params_from_json(j);
     translate_print_params_paths(p);
     return p;
 }
@@ -392,6 +357,8 @@ LinuxPluginHost::~LinuxPluginHost()
 
 void LinuxPluginHost::dispatch_logger_event(std::int64_t tunnel_handle, int level, const std::string& message)
 {
+    // Also into the host log: if the host dies, the last camera messages never reach Orca.
+    host_log_json("tunnel.log", {{"tunnel", tunnel_handle}, {"level", level}, {"message", message}});
     queue_tunnel_event(tunnel_handle, "logger", {{"level", level}, {"message", message}});
 }
 
@@ -408,33 +375,55 @@ std::string LinuxPluginHost::refresh_camera_url_for_ft(const std::string& device
     }
     if (!agent)
         return {};
-    std::mutex m;
-    std::condition_variable cv;
-    bool ready = false;
-    std::string result;
+    // Shared, so a plug-in callback that arrives after the timeout has somewhere to write.
+    struct Reply {
+        std::mutex m;
+        std::condition_variable cv;
+        bool ready{false};
+        std::string result;
+    };
+    auto reply = std::make_shared<Reply>();
     std::string dev_arg = device + "|" + dev_ver + "|\"agora\"|" + channel;
-    const int ret = f(agent, dev_arg, [&](std::string value) {
+    const int ret = f(agent, dev_arg, [reply](std::string value) {
         {
-            std::lock_guard<std::mutex> lock(m);
-            result = std::move(value);
-            ready = true;
+            std::lock_guard<std::mutex> lock(reply->m);
+            reply->result = std::move(value);
+            reply->ready = true;
         }
-        cv.notify_one();
+        reply->cv.notify_one();
     });
     if (ret != 0)
         return {};
-    std::unique_lock<std::mutex> lock(m);
-    if (!cv.wait_for(lock, 20s, [&] { return ready; }))
+    std::unique_lock<std::mutex> lock(reply->m);
+    if (!reply->cv.wait_for(lock, 20s, [&] { return reply->ready; }))
         return {};
-    return result;
+    return reply->result;
 }
 
 std::string LinuxPluginHost::refresh_agora_url_ptr_string() const
 {
+    // libBambuSource reads refresh_url with strtoll(value, nullptr, 16).
     const auto value = reinterpret_cast<std::uintptr_t>(&host_refresh_agora_url);
     std::ostringstream ss;
-    ss << value;
+    ss << std::hex << value;
     return ss.str();
+}
+
+std::string LinuxPluginHost::rewrite_refresh_url(std::string url) const
+{
+    // Orca appends "&refresh_url=<address of its refresh_agora_url()>" to camera URLs, and
+    // libBambuSource calls that address when an Agora token is about to expire (X1E/H2D/X2D
+    // style printers). Through the bridge it is an address in the Windows/macOS process, so
+    // calling it here crashed the host and took every printer's connection down with it.
+    static const std::string key = "refresh_url=";
+    for (std::size_t pos = url.find(key); pos != std::string::npos; pos = url.find(key, pos + 1)) {
+        if (pos == 0 || (url[pos - 1] != '?' && url[pos - 1] != '&'))
+            continue;
+        const std::size_t begin = pos + key.size();
+        const std::size_t end = std::min(url.find('&', begin), url.size());
+        url.replace(begin, end - begin, refresh_agora_url_ptr_string());
+    }
+    return url;
 }
 
 void LinuxPluginHost::ensure_main_dispatcher()
@@ -1005,7 +994,11 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         auto g7 = net<std::string (*)(void*)>("bambu_network_build_logout_cmd"); if (g7) r["logout_cmd"] = g7(a);
         auto g8 = net<std::string (*)(void*)>("bambu_network_build_login_info"); if (g8) r["login_info"] = g8(a);
         auto g9 = net<std::string (*)(void*)>("bambu_network_get_bambulab_host"); if (g9) r["bambulab_host"] = g9(a);
-        host_log_json("net.change_user", r);
+        // The reply carries the login token (user_info, login_cmd, login_info); the log now
+        // goes to a file inside WSL, so keep secrets out of it.
+        host_log_json("net.change_user", {{"value", ret}, {"logged_in", r.value("logged_in", false)},
+                                          {"user_info_was_normalized", r.value("user_info_was_normalized", false)},
+                                          {"bambulab_host", r.value("bambulab_host", std::string())}});
         return r;
     }
 
@@ -1022,7 +1015,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
     if (method == "net.bind_detect") { auto f = net<int (*)(void*, std::string, std::string, detectResult&)>("bambu_network_bind_detect"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); detectResult det; const int ret = f(a, payload.value("dev_ip", std::string()), payload.value("sec_link", std::string()), det); return {{"ok", true}, {"value", ret}, {"detect", {{"result_msg", det.result_msg}, {"command", det.command}, {"dev_id", det.dev_id}, {"model_id", det.model_id}, {"dev_name", det.dev_name}, {"version", det.version}, {"bind_state", det.bind_state}, {"connect_type", det.connect_type}}}}; }
     if (method == "net.report_consent") { auto f = net<int (*)(void*, std::string)>("bambu_network_report_consent"); auto a = lookup_agent(); return f && a ? nlohmann::json{{"ok", true}, {"value", f(a, payload.value("expand", std::string()))}} : not_supported(method); }
     if (method == "net.bind") {
-        auto f = net<int (*)(void*, std::string, std::string, std::string, std::string, bool, OnUpdateStatusFn)>("bambu_network_bind");
+        auto f = net<int (*)(void*, std::string, std::string, std::string, std::string, std::string, bool, OnUpdateStatusFn)>("bambu_network_bind");
         auto a = lookup_agent();
         if (!f || !a) return not_supported(method);
         const auto job_id = payload.value("client_job_id", 0LL);
@@ -1032,7 +1025,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         job->agent_handle = agent_id;
         job->kind = "bind";
         register_job(job);
-        const int ret = f(a, params.value("dev_ip", std::string()), params.value("dev_id", std::string()), params.value("sec_link", std::string()), params.value("timezone", std::string()), params.value("improved", false), [this, job](int status, int code, std::string msg) {
+        const int ret = f(a, params.value("dev_ip", std::string()), params.value("dev_id", std::string()), params.value("dev_model", std::string()), params.value("sec_link", std::string()), params.value("timezone", std::string()), params.value("improved", false), [this, job](int status, int code, std::string msg) {
             queue_event(job->agent_handle, "job.update_status", {{"job_id", job->job_id}, {"kind", job->kind}, {"status", status}, {"code", code}, {"msg", msg}});
         });
         unregister_job(job_id);
@@ -1175,6 +1168,12 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
     if (method == "net.get_my_message") { auto f = net<int (*)(void*, int, int, int, unsigned int*, std::string*)>("bambu_network_get_my_message"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); unsigned int http_code = 0; std::string http_body; const int ret = f(a, payload.value("type", 0), payload.value("after", 0), payload.value("limit", 20), &http_code, &http_body); return {{"ok", true}, {"value", ret}, {"http_code", http_code}, {"http_body", http_body}}; }
     if (method == "net.check_user_task_report") { auto f = net<int (*)(void*, int*, bool*)>("bambu_network_check_user_task_report"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); int task_id = 0; bool printable = false; const int ret = f(a, &task_id, &printable); return {{"ok", true}, {"value", ret}, {"task_id", task_id}, {"printable", printable}}; }
     if (method == "net.get_user_print_info") { auto f = net<int (*)(void*, unsigned int*, std::string*)>("bambu_network_get_user_print_info"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); unsigned int http_code = 0; std::string http_body; const int ret = f(a, &http_code, &http_body); return {{"ok", true}, {"value", ret}, {"http_code", http_code}, {"http_body", http_body}}; }
+    if (method == "net.get_filament_spools") { auto f = net<int (*)(void*, FilamentQueryParams, std::string*)>("bambu_network_get_filament_spools"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string http_body; const int ret = f(a, JsonBridge::filament_query_params_from_json(payload.value("params", nlohmann::json::object())), &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
+    if (method == "net.create_filament_spool") { auto f = net<int (*)(void*, std::string, std::string*)>("bambu_network_create_filament_spool"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string http_body; const int ret = f(a, payload.value("request_body", std::string()), &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
+    if (method == "net.update_filament_spool") { auto f = net<int (*)(void*, std::string, std::string, std::string*)>("bambu_network_update_filament_spool"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string http_body; const int ret = f(a, payload.value("spool_id", std::string()), payload.value("request_body", std::string()), &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
+    if (method == "net.delete_filament_spools") { auto f = net<int (*)(void*, FilamentDeleteParams, std::string*)>("bambu_network_delete_filament_spools"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string http_body; const int ret = f(a, JsonBridge::filament_delete_params_from_json(payload.value("params", nlohmann::json::object())), &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
+    if (method == "net.get_filament_config") { auto f = net<int (*)(void*, std::string*)>("bambu_network_get_filament_config"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string http_body; const int ret = f(a, &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
+    if (method == "net.sync_ams_filaments") { auto f = net<int (*)(void*, AmsSyncParams, std::string*)>("bambu_network_sync_ams_filaments"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string http_body; const int ret = f(a, JsonBridge::ams_sync_params_from_json(payload.value("params", nlohmann::json::object())), &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
     if (method == "net.get_user_tasks") { auto f = net<int (*)(void*, TaskQueryParams, std::string*)>("bambu_network_get_user_tasks"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); auto params = task_query_from_json(payload.value("params", nlohmann::json::object())); std::string http_body; const int ret = f(a, params, &http_body); return {{"ok", true}, {"value", ret}, {"http_body", http_body}}; }
     if (method == "net.get_subtask_info") { auto f = net<int (*)(void*, std::string, std::string*, unsigned int*, std::string*)>("bambu_network_get_subtask_info"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string task_json; unsigned int http_code = 0; std::string http_body; const int ret = f(a, payload.value("subtask_id", std::string()), &task_json, &http_code, &http_body); return {{"ok", true}, {"value", ret}, {"task_json", task_json}, {"http_code", http_code}, {"http_body", http_body}}; }
     if (method == "net.get_slice_info") { auto f = net<int (*)(void*, std::string, std::string, int, std::string*)>("bambu_network_get_slice_info"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string slice_json; const int ret = f(a, payload.value("project_id", std::string()), payload.value("profile_id", std::string()), payload.value("plate_index", 0), &slice_json); return {{"ok", true}, {"value", ret}, {"slice_json", slice_json}}; }
@@ -1191,7 +1190,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
     if (method == "net.get_model_mall_rating") { auto f = net<int (*)(void*, int, std::string&, unsigned int&, std::string&)>("bambu_network_get_model_mall_rating"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string rating_result; unsigned int http_code = 0; std::string http_error; const int ret = f(a, payload.value("job_id", 0), rating_result, http_code, http_error); return {{"ok", true}, {"value", ret}, {"rating_result", rating_result}, {"http_code", http_code}, {"http_error", http_error}}; }
     if (method == "net.get_mw_user_preference") { auto f = net<int (*)(void*, std::function<void(std::string)>)>("bambu_network_get_mw_user_preference"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); return wait_string_callback([&](auto cb) { return f(a, cb); }); }
     if (method == "net.get_mw_user_4ulist") { auto f = net<int (*)(void*, int, int, std::function<void(std::string)>)>("bambu_network_get_mw_user_4ulist"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); return wait_string_callback([&](auto cb) { return f(a, payload.value("seed", 0), payload.value("limit", 0), cb); }); }
-    if (method == "net.get_hms_snapshot") { auto f = net<int (*)(void*, std::string, std::string, std::function<void(std::string, int)>)>("bambu_network_get_hms_snapshot"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); return wait_string_int_callback([&](auto cb) { return f(a, payload.value("dev_id", std::string()), windows_path_to_wsl(payload.value("file_name", std::string())), cb); }); }
+    if (method == "net.get_hms_snapshot") { auto f = net<int (*)(void*, std::string&, std::string&, std::function<void(std::string, int)>)>("bambu_network_get_hms_snapshot"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::string dev_id = payload.value("dev_id", std::string()); std::string file_name = windows_path_to_wsl(payload.value("file_name", std::string())); return wait_string_int_callback([&](auto cb) { return f(a, dev_id, file_name, cb); }); }
 
     if (method == "net.get_my_token") { auto f = net<int (*)(void*, std::string, unsigned int*, std::string*)>("bambu_network_get_my_token"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); unsigned int http_code = 0; std::string http_body; const int ret = f(a, payload.value("ticket", std::string()), &http_code, &http_body); return {{"ok", true}, {"value", ret}, {"http_code", http_code}, {"http_body", http_body}}; }
 
@@ -1225,7 +1224,8 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         auto f = net<fn_ft_tunnel_create>("ft_tunnel_create");
         if (!f) return not_supported(method);
         FT_TunnelHandle* tunnel = nullptr;
-        const int ret = static_cast<int>(f(payload.value("url", std::string()).c_str(), &tunnel));
+        const std::string url = rewrite_refresh_url(payload.value("url", std::string()));
+        const int ret = static_cast<int>(f(url.c_str(), &tunnel));
         if (ret != 0 || !tunnel)
             return {{"ok", true}, {"value", ret}, {"tunnel", 0}};
         const auto id = m_next_ft_tunnel++;
@@ -1441,7 +1441,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
         auto f = src<int (*)(Bambu_Tunnel*, const char*)>("Bambu_Create");
         if (!f) return not_supported(method);
         Bambu_Tunnel tunnel = nullptr;
-        const std::string path = windows_path_to_wsl(payload.value("path", std::string()));
+        const std::string path = rewrite_refresh_url(windows_path_to_wsl(payload.value("path", std::string())));
         const int ret = f(&tunnel, path.c_str());
         if (ret != 0)
             return {{"ok", true}, {"value", ret}, {"tunnel", 0}};
@@ -1453,7 +1453,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
     if (method == "src.start_stream") { auto f = src<int (*)(Bambu_Tunnel, bool)>("Bambu_StartStream"); auto t = lookup_tunnel(); return f && t ? nlohmann::json{{"ok", true}, {"value", f(t, payload.value("video", false))}} : not_supported(method); }
     if (method == "src.start_stream_ex") { auto f = src<int (*)(Bambu_Tunnel, int)>("Bambu_StartStreamEx"); auto t = lookup_tunnel(); return f && t ? nlohmann::json{{"ok", true}, {"value", f(t, payload.value("type", 0))}} : not_supported(method); }
     if (method == "src.get_stream_count") { auto f = src<int (*)(Bambu_Tunnel)>("Bambu_GetStreamCount"); auto t = lookup_tunnel(); return f && t ? nlohmann::json{{"ok", true}, {"value", f(t)}} : not_supported(method); }
-    if (method == "src.get_stream_info") { auto f = src<int (*)(Bambu_Tunnel, int, Bambu_StreamInfo*)>("Bambu_GetStreamInfo"); auto t = lookup_tunnel(); if (!f || !t) return not_supported(method); Bambu_StreamInfo info{}; const int ret = f(t, payload.value("index", 0), &info); nlohmann::json out{{"ok", true}, {"value", ret}}; if (ret == 0) { nlohmann::json ji{{"type", info.type}, {"sub_type", info.sub_type}, {"format_type", info.format_type}, {"format_size", info.format_size}, {"max_frame_size", info.max_frame_size}, {"format_buffer", info.format_buffer && info.format_size > 0 ? std::string(reinterpret_cast<const char*>(info.format_buffer), info.format_size) : std::string()}}; if (info.type == VIDE) ji.update({{"width", info.format.video.width}, {"height", info.format.video.height}, {"frame_rate", info.format.video.frame_rate}}); else ji.update({{"sample_rate", info.format.audio.sample_rate}, {"channel_count", info.format.audio.channel_count}, {"sample_size", info.format.audio.sample_size}}); out["info"] = ji; } return out; }
+    if (method == "src.get_stream_info") { auto f = src<int (*)(Bambu_Tunnel, int, Bambu_StreamInfo*)>("Bambu_GetStreamInfo"); auto t = lookup_tunnel(); if (!f || !t) return not_supported(method); Bambu_StreamInfo info{}; const int ret = f(t, payload.value("index", 0), &info); nlohmann::json out{{"ok", true}, {"value", ret}}; if (ret == 0) { nlohmann::json ji{{"type", info.type}, {"sub_type", info.sub_type}, {"format_type", info.format_type}, {"format_size", info.format_size}, {"max_frame_size", info.max_frame_size}}; /* format_buffer is binary codec data (H.264 SPS/PPS); as a JSON string it made dump() throw and killed the host, so it travels in the binary frame */ if (info.format_buffer && info.format_size > 0) { g_thread_reply_binary.assign(info.format_buffer, info.format_buffer + info.format_size); out["__binary_pending"] = true; } if (info.type == VIDE) ji.update({{"width", info.format.video.width}, {"height", info.format.video.height}, {"frame_rate", info.format.video.frame_rate}}); else ji.update({{"sample_rate", info.format.audio.sample_rate}, {"channel_count", info.format.audio.channel_count}, {"sample_size", info.format.audio.sample_size}}); out["info"] = ji; } return out; }
     if (method == "src.get_duration") { auto f = src<unsigned long (*)(Bambu_Tunnel)>("Bambu_GetDuration"); auto t = lookup_tunnel(); return f && t ? nlohmann::json{{"ok", true}, {"value", f(t)}} : not_supported(method); }
     if (method == "src.seek") { auto f = src<int (*)(Bambu_Tunnel, unsigned long)>("Bambu_Seek"); auto t = lookup_tunnel(); return f && t ? nlohmann::json{{"ok", true}, {"value", f(t, payload.value("time", 0UL))}} : not_supported(method); }
     if (method == "src.send_message") {

@@ -1,7 +1,11 @@
 #include "LinuxPluginHost.hpp"
 #include "../../src/slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxSoBridgeRpcProtocol.hpp"
 
+#include <csignal>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <execinfo.h>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -14,6 +18,53 @@
 using namespace Slic3r::PJarczakLinuxBridge;
 
 namespace {
+// The vendor libraries run in this process; a crash in them used to leave no trace.
+// Print the signal, fault address and a backtrace to stderr (the host log) first.
+void write_stderr(const char* s)
+{
+    [[maybe_unused]] auto unused = ::write(STDERR_FILENO, s, std::strlen(s));
+}
+
+void write_stderr_hex(std::uintptr_t v)
+{
+    char buf[2 + sizeof(v) * 2 + 1];
+    char* p = buf + sizeof(buf) - 1;
+    *p = '\0';
+    do {
+        *--p = "0123456789abcdef"[v & 0xf];
+        v >>= 4;
+    } while (v != 0);
+    *--p = 'x';
+    *--p = '0';
+    write_stderr(p);
+}
+
+void crash_handler(int sig, siginfo_t* info, void*)
+{
+    write_stderr("[PJBRIDGE] fatal signal ");
+    write_stderr_hex(static_cast<std::uintptr_t>(sig));
+    write_stderr(" at address ");
+    write_stderr_hex(reinterpret_cast<std::uintptr_t>(info ? info->si_addr : nullptr));
+    write_stderr(", backtrace:\n");
+    void* frames[64];
+    const int n = ::backtrace(frames, 64);
+    ::backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+void install_crash_handler()
+{
+    void* warmup[1];
+    ::backtrace(warmup, 1); // loads libgcc now, not inside the signal handler
+    struct sigaction sa {};
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT})
+        ::sigaction(sig, &sa, nullptr);
+}
+
 int run_probe_auth()
 {
     LinuxPluginHost host;
@@ -54,6 +105,7 @@ int run_probe_auth()
 int main(int argc, char** argv)
 {
     std::ios::sync_with_stdio(false);
+    install_crash_handler();
 
     if (argc > 1 && std::string(argv[1]) == "--probe-auth")
         return run_probe_auth();
@@ -98,10 +150,24 @@ int main(int argc, char** argv)
 
         std::thread([&host, &rpc_out, &out_mutex, req_id = req.id, req_method = req.method, req_payload = req.payload, request_binary = std::move(request_binary)]() mutable {
             LinuxPluginHost::set_thread_request_binary(std::move(request_binary));
-            nlohmann::json resp = host.handle(req_method, req_payload);
-
+            // An exception escaping this thread calls std::terminate and kills the host (and with
+            // it every printer connection); answer the one request with an error instead. The
+            // forwarder waits for every reply, so one must always be sent.
+            nlohmann::json resp;
             std::vector<unsigned char> reply_binary;
-            const bool has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
+            bool has_reply_binary = false;
+            try {
+                resp = host.handle(req_method, req_payload);
+                has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
+                if (has_reply_binary != resp.value("__binary_pending", false)) {
+                    resp["__binary_pending"] = has_reply_binary;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "[PJBRIDGE] " << req_method << " threw: " << e.what() << std::endl;
+                resp = {{"ok", false}, {"error", std::string("bridge host exception: ") + e.what()}};
+                reply_binary.clear();
+                has_reply_binary = false;
+            }
 
             std::lock_guard<std::mutex> lock(out_mutex);
             write_json_frame(rpc_out, RpcFrameType::json_response, req_id, resp);
