@@ -53,6 +53,9 @@ public:
     LinuxPluginHost();
     ~LinuxPluginHost();
     nlohmann::json handle(const std::string& method, const nlohmann::json& payload);
+    // Sequence number of the newest queued event (events carry "seq"); job replies report it so
+    // the forwarder can finish delivering the job's events before the job call returns.
+    std::int64_t last_event_seq();
     static void set_thread_request_binary(std::vector<unsigned char> data);
     static bool consume_thread_reply_binary(std::vector<unsigned char>& out);
     void dispatch_logger_event(std::int64_t tunnel_handle, int level, const std::string& message);
@@ -75,6 +78,7 @@ private:
     void unregister_job(std::int64_t job_id);
     void set_job_cancel(std::int64_t job_id, bool value);
     void set_job_wait_reply(std::int64_t job_id, std::int64_t request_id, bool value);
+    bool ask_orca(const std::shared_ptr<HostJobState>& job, const std::string& event, nlohmann::json payload);
     std::shared_ptr<HostCallbackReplyState> register_callback_request(std::int64_t request_id);
     void unregister_callback_request(std::int64_t request_id);
     void set_callback_reply(std::int64_t request_id, const std::string& value);
@@ -110,6 +114,7 @@ private:
     std::mutex m_state_mutex;
     std::mutex m_events_mutex;
     std::deque<nlohmann::json> m_events;
+    std::int64_t m_next_event_seq{1};
     std::map<std::int64_t, std::shared_ptr<HostJobState>> m_jobs;
     std::map<std::int64_t, std::shared_ptr<HostCallbackReplyState>> m_callback_replies;
     std::atomic<std::int64_t> m_next_wait_request{1};

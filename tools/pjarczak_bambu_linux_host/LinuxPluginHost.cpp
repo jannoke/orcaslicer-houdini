@@ -609,13 +609,19 @@ nlohmann::json LinuxPluginHost::not_supported(const std::string& method) const
 void LinuxPluginHost::queue_event(std::int64_t agent_handle, const std::string& name, const nlohmann::json& payload)
 {
     std::lock_guard<std::mutex> lock(m_events_mutex);
-    m_events.push_back({{"agent", agent_handle}, {"name", name}, {"payload", payload}});
+    m_events.push_back({{"agent", agent_handle}, {"name", name}, {"payload", payload}, {"seq", m_next_event_seq++}});
 }
 
 void LinuxPluginHost::queue_tunnel_event(std::int64_t tunnel_handle, const std::string& name, const nlohmann::json& payload)
 {
     std::lock_guard<std::mutex> lock(m_events_mutex);
-    m_events.push_back({{"tunnel", tunnel_handle}, {"name", name}, {"payload", payload}});
+    m_events.push_back({{"tunnel", tunnel_handle}, {"name", name}, {"payload", payload}, {"seq", m_next_event_seq++}});
+}
+
+std::int64_t LinuxPluginHost::last_event_seq()
+{
+    std::lock_guard<std::mutex> lock(m_events_mutex);
+    return m_next_event_seq - 1;
 }
 
 nlohmann::json LinuxPluginHost::drain_events(std::size_t limit)
@@ -669,6 +675,29 @@ void LinuxPluginHost::set_job_wait_reply(std::int64_t job_id, std::int64_t reque
         job->wait_reply_ready = true;
     }
     job->wait_cv.notify_all();
+}
+
+// Runs one of Orca's job callbacks that return an answer (OnWaitFn, CheckFn) and waits for it, as
+// the plug-in expects: it calls them before the job call returns, and Orca's print job passes
+// callbacks that refer to its own local variables, so the job must not finish while Orca's callback
+// still runs. The timeout only keeps a plug-in thread from hanging if the forwarder is gone.
+bool LinuxPluginHost::ask_orca(const std::shared_ptr<HostJobState>& job, const std::string& event, nlohmann::json payload)
+{
+    const auto request_id = m_next_wait_request.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lock(job->wait_mutex);
+        job->wait_request_id = request_id;
+        job->wait_reply_ready = false;
+        job->wait_reply_value = true;
+    }
+    payload["job_id"] = job->job_id;
+    payload["kind"] = job->kind;
+    payload["request_id"] = request_id;
+    queue_event(job->agent_handle, event, payload);
+    std::unique_lock<std::mutex> lock(job->wait_mutex);
+    if (!job->wait_cv.wait_for(lock, 120s, [&] { return job->wait_reply_ready && job->wait_request_id == request_id; }))
+        return true;
+    return job->wait_reply_value;
 }
 
 std::shared_ptr<HostCallbackReplyState> LinuxPluginHost::register_callback_request(std::int64_t request_id)
@@ -1054,8 +1083,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
                 return job->cancel_requested.load();
             },
             [this, job](int status, std::string job_info) {
-                queue_event(job->agent_handle, "job.wait", {{"job_id", job->job_id}, {"kind", job->kind}, {"status", status}, {"job_info", job_info}});
-                return !job->cancel_requested.load();
+                return ask_orca(job, "job.wait", {{"status", status}, {"job_info", job_info}}) && !job->cancel_requested.load();
             });
         unregister_job(job_id);
         return {{"ok", true}, {"value", ret}, {"job_id", job_id}};
@@ -1080,8 +1108,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
                 return job->cancel_requested.load();
             },
             [this, job](int status, std::string job_info) {
-                queue_event(job->agent_handle, "job.wait", {{"job_id", job->job_id}, {"kind", job->kind}, {"status", status}, {"job_info", job_info}});
-                return !job->cancel_requested.load();
+                return ask_orca(job, "job.wait", {{"status", status}, {"job_info", job_info}}) && !job->cancel_requested.load();
             });
         unregister_job(job_id);
         return {{"ok", true}, {"value", ret}, {"job_id", job_id}};
@@ -1161,7 +1188,7 @@ nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann
     if (method == "net.request_setting_id") { auto f = net<std::string (*)(void*, std::string, std::map<std::string, std::string>*, unsigned int*)>("bambu_network_request_setting_id"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); auto values = json_to_string_map(payload.value("values", nlohmann::json::object())); unsigned int http_code = 0; std::string setting_id = f(a, payload.value("name", std::string()), &values, &http_code); return {{"ok", true}, {"value", 0}, {"setting_id", setting_id}, {"http_code", http_code}}; }
     if (method == "net.get_user_presets") { auto f = net<int (*)(void*, std::map<std::string, std::map<std::string, std::string>>*)>("bambu_network_get_user_presets"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); std::map<std::string, std::map<std::string, std::string>> user_presets; const int ret = f(a, &user_presets); return {{"ok", true}, {"value", ret}, {"user_presets", nested_string_map_to_json(user_presets)}}; }
     if (method == "net.get_setting_list") { auto f = net<int (*)(void*, std::string, ProgressFn, WasCancelledFn)>("bambu_network_get_setting_list"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); const auto job_id = payload.value("client_job_id", 0LL); const auto params = payload.value("params", nlohmann::json::object()); auto job = std::make_shared<HostJobState>(); job->job_id = job_id; job->agent_handle = agent_id; job->kind = "get_setting_list"; register_job(job); const int ret = f(a, params.value("bundle_version", std::string()), [this, job](int progress) { queue_event(job->agent_handle, "job.progress", {{"job_id", job->job_id}, {"kind", job->kind}, {"progress", progress}}); }, [job]() { return job->cancel_requested.load(); }); unregister_job(job_id); return {{"ok", true}, {"value", ret}, {"job_id", job_id}}; }
-    if (method == "net.get_setting_list2") { auto f = net<int (*)(void*, std::string, CheckFn, ProgressFn, WasCancelledFn)>("bambu_network_get_setting_list2"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); const auto job_id = payload.value("client_job_id", 0LL); const auto params = payload.value("params", nlohmann::json::object()); auto job = std::make_shared<HostJobState>(); job->job_id = job_id; job->agent_handle = agent_id; job->kind = "get_setting_list2"; register_job(job); const int ret = f(a, params.value("bundle_version", std::string()), [this, job](std::map<std::string, std::string> info) { const auto request_id = m_next_wait_request.fetch_add(1); { std::lock_guard<std::mutex> lock(job->wait_mutex); job->wait_request_id = request_id; job->wait_reply_ready = false; job->wait_reply_value = true; } queue_event(job->agent_handle, "job.check", {{"job_id", job->job_id}, {"kind", job->kind}, {"request_id", request_id}, {"info", info}}); std::unique_lock<std::mutex> lock(job->wait_mutex); job->wait_cv.wait(lock, [&] { return job->wait_reply_ready && job->wait_request_id == request_id; }); return job->wait_reply_value; }, [this, job](int progress) { queue_event(job->agent_handle, "job.progress", {{"job_id", job->job_id}, {"kind", job->kind}, {"progress", progress}}); }, [job]() { return job->cancel_requested.load(); }); unregister_job(job_id); return {{"ok", true}, {"value", ret}, {"job_id", job_id}}; }
+    if (method == "net.get_setting_list2") { auto f = net<int (*)(void*, std::string, CheckFn, ProgressFn, WasCancelledFn)>("bambu_network_get_setting_list2"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); const auto job_id = payload.value("client_job_id", 0LL); const auto params = payload.value("params", nlohmann::json::object()); auto job = std::make_shared<HostJobState>(); job->job_id = job_id; job->agent_handle = agent_id; job->kind = "get_setting_list2"; register_job(job); const int ret = f(a, params.value("bundle_version", std::string()), [this, job](std::map<std::string, std::string> info) { return ask_orca(job, "job.check", {{"info", info}}); }, [this, job](int progress) { queue_event(job->agent_handle, "job.progress", {{"job_id", job->job_id}, {"kind", job->kind}, {"progress", progress}}); }, [job]() { return job->cancel_requested.load(); }); unregister_job(job_id); return {{"ok", true}, {"value", ret}, {"job_id", job_id}}; }
     if (method == "net.put_setting") { auto f = net<int (*)(void*, std::string, std::string, std::map<std::string, std::string>*, unsigned int*)>("bambu_network_put_setting"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); auto values = json_to_string_map(payload.value("values", nlohmann::json::object())); unsigned int http_code = 0; const int ret = f(a, payload.value("setting_id", std::string()), payload.value("name", std::string()), &values, &http_code); return {{"ok", true}, {"value", ret}, {"http_code", http_code}}; }
     if (method == "net.delete_setting") { auto f = net<int (*)(void*, std::string)>("bambu_network_delete_setting"); auto a = lookup_agent(); return f && a ? nlohmann::json{{"ok", true}, {"value", f(a, payload.value("setting_id", std::string()))}} : not_supported(method); }
     if (method == "net.set_extra_http_header") { auto f = net<int (*)(void*, std::map<std::string, std::string>)>("bambu_network_set_extra_http_header"); auto a = lookup_agent(); if (!f || !a) return not_supported(method); auto headers = json_to_string_map(payload.value("headers", nlohmann::json::object())); const int ret = f(a, headers); nlohmann::json r{{"ok", true}, {"value", ret}, {"headers", headers}}; host_log_json("net.set_extra_http_header", r); return r; }

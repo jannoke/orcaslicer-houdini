@@ -51,6 +51,17 @@ void EventPump::stop()
     m_running = false;
 }
 
+void EventPump::wait_dispatched(std::int64_t seq, std::chrono::milliseconds timeout)
+{
+    {
+        std::lock_guard<std::mutex> lock(g_pump_mutex);
+        if (!m_running)
+            return;
+    }
+    std::unique_lock<std::mutex> lock(m_dispatched_mutex);
+    m_dispatched_cv.wait_for(lock, timeout, [&] { return m_dispatched_seq >= seq; });
+}
+
 void EventPump::run()
 {
     using namespace std::chrono_literals;
@@ -73,6 +84,13 @@ void EventPump::run()
                 dispatch_agent_event(ev.value("agent", 0LL), ev.value("name", std::string()), payload);
             else if (ev.contains("tunnel"))
                 dispatch_tunnel_event(ev.value("tunnel", 0LL), ev.value("name", std::string()), payload);
+            if (ev.contains("seq")) {
+                {
+                    std::lock_guard<std::mutex> lock(m_dispatched_mutex);
+                    m_dispatched_seq = ev.value("seq", 0LL);
+                }
+                m_dispatched_cv.notify_all();
+            }
         }
     }
 }

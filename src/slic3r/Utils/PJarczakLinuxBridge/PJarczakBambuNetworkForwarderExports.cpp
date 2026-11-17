@@ -138,6 +138,16 @@ static void start_cancel_watch(const std::shared_ptr<BridgeJobState>& job)
     });
 }
 
+// Ends a job call: first lets the event pump deliver the progress/status events the host queued
+// before it replied (the last ones usually carry the error details), then stops the job's callbacks.
+static void finish_job(BridgeAgent* a, const std::shared_ptr<BridgeJobState>& job, const nlohmann::json& reply)
+{
+    using namespace std::chrono_literals;
+    if (reply.contains("events_upto"))
+        EventPump::instance().wait_dispatched(reply.value("events_upto", 0LL), 2s);
+    unregister_job_state(a, job->job_id);
+}
+
 static int invoke_job_update_only(const char* method, const char* kind, BridgeAgent* a, const nlohmann::json& payload, BBL::OnUpdateStatusFn update)
 {
     if (!a)
@@ -148,7 +158,7 @@ static int invoke_job_update_only(const char* method, const char* kind, BridgeAg
     job->on_update_status = std::move(update);
     register_job_state(a, job);
     const auto j = ok_or_error(RpcClient::instance().invoke_json(method, {{"agent", agent_id(a)}, {"client_job_id", job->job_id}, {"params", payload}}));
-    unregister_job_state(a, job->job_id);
+    finish_job(a, job, j);
     return j.value("value", j.value("ret", 0));
 }
 
@@ -168,7 +178,7 @@ static int invoke_job_with_wait(const char* method, const char* kind, BridgeAgen
     const auto j = ok_or_error(RpcClient::instance().invoke_json(method, {{"agent", agent_id(a)}, {"client_job_id", job->job_id}, {"params", params}}));
     if (out && j.contains("out"))
         *out = j.value("out", std::string());
-    unregister_job_state(a, job->job_id);
+    finish_job(a, job, j);
     return j.value("value", j.value("ret", 0));
 }
 
@@ -234,7 +244,7 @@ static int invoke_progress_job(const char* method, const char* kind, BridgeAgent
     register_job_state(a, job);
     start_cancel_watch(job);
     const auto j = ok_or_error(RpcClient::instance().invoke_json(method, {{"agent", agent_id(a)}, {"client_job_id", job->job_id}, {"params", payload}}));
-    unregister_job_state(a, job->job_id);
+    finish_job(a, job, j);
     return j.value("value", j.value("ret", 0));
 }
 
@@ -251,7 +261,7 @@ static int invoke_progress_check_job(const char* method, const char* kind, Bridg
     register_job_state(a, job);
     start_cancel_watch(job);
     const auto j = ok_or_error(RpcClient::instance().invoke_json(method, {{"agent", agent_id(a)}, {"client_job_id", job->job_id}, {"params", payload}}));
-    unregister_job_state(a, job->job_id);
+    finish_job(a, job, j);
     return j.value("value", j.value("ret", 0));
 }
 
