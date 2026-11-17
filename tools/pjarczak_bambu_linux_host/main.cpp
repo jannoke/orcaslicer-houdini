@@ -158,6 +158,10 @@ int main(int argc, char** argv)
             bool has_reply_binary = false;
             try {
                 resp = host.handle(req_method, req_payload);
+                // A job call (its reply has job_id) queued its progress/status events before
+                // returning; tell the forwarder which ones it must deliver before the call returns.
+                if (resp.is_object() && resp.contains("job_id"))
+                    resp["events_upto"] = host.last_event_seq();
                 has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
                 if (has_reply_binary != resp.value("__binary_pending", false)) {
                     resp["__binary_pending"] = has_reply_binary;

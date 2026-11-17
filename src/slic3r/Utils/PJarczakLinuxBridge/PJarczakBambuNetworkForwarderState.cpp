@@ -41,6 +41,41 @@ void deliver(BridgeAgent* agent, Fn BridgeAgent::*member, Args... args)
     });
 }
 
+// Calls a job's on_update_status / on_progress on the event pump thread (the native plug-in calls
+// them on its own thread as well), unless the job call has returned.
+void call_job_callback(const std::shared_ptr<BridgeJobState>& job, const std::function<void()>& fn)
+{
+    std::lock_guard<std::mutex> lock(job->callbacks_mutex);
+    if (!job->finished)
+        fn();
+}
+
+// Answers the host's job.wait / job.check: runs Orca's callback and sends its result back. The
+// callback gets its own thread because Orca's print job waits in on_wait for the printer to report
+// the new job, and those printer messages arrive through this event pump. The host holds the job
+// call open until the reply, and unregister_job_state() joins the thread before the call returns.
+void answer_job_callback(const std::shared_ptr<BridgeJobState>& job, std::int64_t job_id, std::int64_t request_id, std::function<bool()> ask)
+{
+    auto reply = [job_id, request_id](bool value) {
+        RpcClient::instance().invoke_void("bridge.job_wait_reply", {{"job_id", job_id}, {"request_id", request_id}, {"reply", value}});
+    };
+    if (job) {
+        std::lock_guard<std::mutex> lock(job->callbacks_mutex);
+        if (!job->finished) {
+            job->callback_threads.emplace_back([ask = std::move(ask), reply] {
+                bool value = true;
+                try {
+                    value = ask();
+                } catch (...) {
+                }
+                reply(value);
+            });
+            return;
+        }
+    }
+    reply(true);
+}
+
 #if defined(_WIN32)
 std::wstring utf8_to_wstring(const std::string& s)
 {
@@ -216,7 +251,7 @@ void dispatch_agent_event(std::int64_t remote_handle, const std::string& name, c
             const int status = payload.value("status", 0);
             const int code = payload.value("code", 0);
             const auto msg = payload.value("msg", std::string());
-            run_or_queue(agent, [job, status, code, msg] { job->on_update_status(status, code, msg); });
+            call_job_callback(job, [&] { job->on_update_status(status, code, msg); });
         }
         return;
     }
@@ -224,37 +259,33 @@ void dispatch_agent_event(std::int64_t remote_handle, const std::string& name, c
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
         if (job && job->on_progress) {
             const int progress = payload.value("progress", 0);
-            run_or_queue(agent, [job, progress] { job->on_progress(progress); });
+            call_job_callback(job, [&] { job->on_progress(progress); });
         }
         return;
     }
     if (name == "job.check") {
-        auto job = find_job_state(agent, payload.value("job_id", 0LL));
-        bool reply = true;
-        if (job && job->on_check && payload.contains("info") && payload["info"].is_object()) {
-            std::map<std::string, std::string> info;
+        const auto job_id = payload.value("job_id", 0LL);
+        auto job = find_job_state(agent, job_id);
+        std::map<std::string, std::string> info;
+        if (payload.contains("info") && payload["info"].is_object()) {
             for (auto it = payload["info"].begin(); it != payload["info"].end(); ++it)
                 info[it.key()] = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
-            reply = job->on_check(info);
         }
-        RpcClient::instance().invoke_void("bridge.job_wait_reply", {{"job_id", payload.value("job_id", 0LL)}, {"request_id", payload.value("request_id", 0LL)}, {"reply", reply}});
+        answer_job_callback(job, job_id, payload.value("request_id", 0LL), [job, info] { return job->on_check ? job->on_check(info) : true; });
         return;
     }
     if (name == "job.wait") {
-        auto job = find_job_state(agent, payload.value("job_id", 0LL));
-        bool reply = true;
-        if (job && job->on_wait) {
-            const int status = payload.value("status", 0);
-            const auto info = payload.value("job_info", std::string());
-            reply = job->on_wait(status, info);
-        }
-        RpcClient::instance().invoke_void("bridge.job_wait_reply", {{"job_id", payload.value("job_id", 0LL)}, {"request_id", payload.value("request_id", 0LL)}, {"reply", reply}});
+        const auto job_id = payload.value("job_id", 0LL);
+        auto job = find_job_state(agent, job_id);
+        const int status = payload.value("status", 0);
+        const auto info = payload.value("job_info", std::string());
+        answer_job_callback(job, job_id, payload.value("request_id", 0LL), [job, status, info] { return job->on_wait ? job->on_wait(status, info) : true; });
         return;
     }
     if (name == "job.complete") {
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
         if (job && job->out_string && payload.contains("out"))
-            *job->out_string = payload.value("out", std::string());
+            call_job_callback(job, [&] { *job->out_string = payload.value("out", std::string()); });
         return;
     }
 }
@@ -312,6 +343,14 @@ void unregister_job_state(BridgeAgent* agent, std::int64_t job_id)
         job->stop_cancel_watch = true;
         if (job->cancel_watch.joinable())
             job->cancel_watch.join();
+        std::vector<std::thread> callback_threads;
+        {
+            std::lock_guard<std::mutex> lock(job->callbacks_mutex);
+            job->finished = true;
+            callback_threads.swap(job->callback_threads);
+        }
+        for (auto& thread : callback_threads)
+            thread.join();
     }
 }
 

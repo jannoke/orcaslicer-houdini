@@ -86,6 +86,12 @@ struct BridgeJobState {
     std::string* out_string{nullptr};
     std::atomic<bool> stop_cancel_watch{false};
     std::thread cancel_watch;
+    // Orca's job callbacks refer to locals of the job call (as with the native plug-in, which calls
+    // them before the call returns), so they run only while it is in progress: unregister_job_state()
+    // sets `finished` under this mutex and joins callback_threads (on_wait / on_check).
+    std::mutex callbacks_mutex;
+    std::vector<std::thread> callback_threads;
+    bool finished{false};
 };
 
 struct BridgeTunnel {
