@@ -127,7 +127,9 @@ bool read_request_frame(const RawRpcFrame& raw, RpcFrame& frame, std::string& er
 
     frame.id = raw.id;
     frame.method = payload.value("method", std::string());
-    frame.payload = payload.contains("payload") ? payload["payload"] : nlohmann::json::object();
+    // Every method takes an object. A call without arguments arrives as null (a default `{}`
+    // json argument is null, not an empty object), and value() on null throws.
+    frame.payload = payload.contains("payload") && payload["payload"].is_object() ? payload["payload"] : nlohmann::json::object();
     return true;
 }
 

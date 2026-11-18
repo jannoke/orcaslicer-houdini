@@ -25,12 +25,12 @@ public:
 
     bool ensure_started();
     bool is_started() const;
-    int invoke_int(const std::string& method, const nlohmann::json& payload = {});
-    bool invoke_bool(const std::string& method, const nlohmann::json& payload = {});
-    std::string invoke_string(const std::string& method, const nlohmann::json& payload = {});
-    nlohmann::json invoke_json(const std::string& method, const nlohmann::json& payload = {});
-    RpcBinaryReply invoke_binary(const std::string& method, const nlohmann::json& payload = {}, const std::vector<unsigned char>& request_binary = {});
-    void invoke_void(const std::string& method, const nlohmann::json& payload = {});
+    int invoke_int(const std::string& method, const nlohmann::json& payload = nlohmann::json::object());
+    bool invoke_bool(const std::string& method, const nlohmann::json& payload = nlohmann::json::object());
+    std::string invoke_string(const std::string& method, const nlohmann::json& payload = nlohmann::json::object());
+    nlohmann::json invoke_json(const std::string& method, const nlohmann::json& payload = nlohmann::json::object());
+    RpcBinaryReply invoke_binary(const std::string& method, const nlohmann::json& payload = nlohmann::json::object(), const std::vector<unsigned char>& request_binary = {});
+    void invoke_void(const std::string& method, const nlohmann::json& payload = nlohmann::json::object());
     std::string last_error() const;
 
 private:
